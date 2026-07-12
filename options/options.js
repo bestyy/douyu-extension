@@ -20,6 +20,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
   }
 
+  // Migration check - old cookie config detected
+  if (data.cookie && data.cookie.value && (!data.rooms || data.rooms.length === 0)) {
+    showStatus(addStatus, '\u{1F4A1} 已检测到旧版配置，请添加您要监控的房间号', 'info');
+  }
+
   // 渲染房间列表
   async function renderRoomList() {
     const rooms = (await chrome.storage.local.get('rooms')).rooms || [];

@@ -1,0 +1,941 @@
+# Review package: d27d8bf..HEAD
+
+## Commits
+4cb01bc refactor(popup): remove cookie expired state, add no-room state
+270241e feat(options): room management UI, remove cookie UI
+2b35845 refactor(background): switch to room-based polling, remove cookie logic
+182ad4c refactor(api): rewrite to public room API, remove cookie methods
+f1c921b refactor(storage): replace cookie with rooms in DEFAULT_STORAGE
+
+## Files changed
+ background.js        | 106 +++++++++++++++++++++++--------------
+ lib/douyu-api.js     | 147 +++++++++++++++++++++++++--------------------------
+ lib/storage.js       |   5 +-
+ options/options.css  |  95 +++++++++++++++++++++++++++++++++
+ options/options.html |  31 ++++-------
+ options/options.js   | 134 +++++++++++++++++++++++++++++-----------------
+ popup/popup.html     |  10 ++--
+ popup/popup.js       |  21 +++-----
+ 8 files changed, 337 insertions(+), 212 deletions(-)
+
+## Diff
+diff --git a/background.js b/background.js
+index eb5d69c..27d9f49 100644
+--- a/background.js
++++ b/background.js
+@@ -1,81 +1,68 @@
+ // background.js — Service Worker
+ 
+ importScripts('lib/storage.js');
+ importScripts('lib/douyu-api.js');
+ 
+ // === 初始化 ===
+ chrome.runtime.onInstalled.addListener(async () => {
+-  // 初始化默认存储
+   const existing = await StorageHelper.getAll();
+   if (Object.keys(existing).length === 0) {
+-    await chrome.storage.local.set({
+-      ...DEFAULT_STORAGE,
+-      _firstRun: true
+-    });
++    await chrome.storage.local.set(DEFAULT_STORAGE);
+   }
+-  // 创建定时器
+   await createAlarm();
+ });
+ 
+ // === 定时器管理 ===
+ async function createAlarm() {
+   const settings = await StorageHelper.get('settings');
+   const interval = settings?.refreshInterval || 60;
+-  // 最小 60 秒
+   const minutes = Math.max(1, Math.floor(interval / 60));
+-  chrome.alarms.create('refreshFollowList', { periodInMinutes: minutes });
++  chrome.alarms.create('refreshRooms', { periodInMinutes: minutes });
+ }
+ 
+ chrome.alarms.onAlarm.addListener(async (alarm) => {
+-  if (alarm.name === 'refreshFollowList') {
+-    await refreshFollowList();
++  if (alarm.name === 'refreshRooms') {
++    await refreshRooms();
+   }
+ });
+ 
+ // === 核心轮询逻辑 ===
+-async function refreshFollowList() {
+-  const cookie = await StorageHelper.get('cookie');
+-  if (!cookie || !cookie.value) {
+-    return; // 未配置 Cookie，跳过
++async function refreshRooms() {
++  const rooms = await StorageHelper.get('rooms');
++  if (!rooms || rooms.length === 0) {
++    return; // 未配置房间号，跳过
+   }
+ 
+-  const result = await DouyuAPI.fetchFollowList(cookie.value);
++  const roomIds = rooms.map(r => r.roomId);
++  const result = await DouyuAPI.batchFetchRoomInfo(roomIds);
+ 
+-  if (!result.success) {
+-    if (result.error === 'cookie_expired') {
+-      // 标记 cookie 失效
+-      await StorageHelper.set('cookie', { ...cookie, lastChecked: Date.now() });
+-      await StorageHelper.set('_cookieError', 'expired');
+-    }
+-    return;
++  if (!result.success && result.data.length === 0) {
++    return; // 所有房间查询失败，保留上次缓存
+   }
+ 
+-  // 清除过期标记
+-  await StorageHelper.set('_cookieError', null);
+-
+   // 获取之前的直播列表用于检测新开播
+   const prevStreamers = (await StorageHelper.get('streamers')) || [];
+   const prevOnlineRoomIds = new Set(
+     prevStreamers.filter(s => s.online).map(s => s.roomId)
+   );
+ 
+   // 更新存储
+   await StorageHelper.set('streamers', result.data);
+   await StorageHelper.set('lastRefresh', Date.now());
+ 
+   // 更新 badge
+   const onlineCount = result.data.filter(s => s.online).length;
+   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
+   chrome.action.setBadgeBackgroundColor({ color: '#FF4400' });
+ 
+-  // 首次运行：标记所有在线主播为已通知，不发送通知
++  // 首次运行标记
+   const isFirstRun = (await StorageHelper.get('_firstRun')) === true;
+   if (isFirstRun) {
+     const onlineIds = result.data.filter(s => s.online).map(s => s.roomId);
+     await StorageHelper.set('notifiedRooms', onlineIds);
+     await StorageHelper.set('_firstRun', null);
+   } else {
+     // 检测新开播 → 发送通知
+     const settings = await StorageHelper.get('settings');
+     if (settings?.notificationsEnabled !== false) {
+       await checkNewLiveStreams(result.data, prevOnlineRoomIds);
+@@ -87,72 +74,109 @@ async function refreshFollowList() {
+ async function checkNewLiveStreams(currentStreamers, prevOnlineRoomIds) {
+   const notifiedRooms = new Set((await StorageHelper.get('notifiedRooms')) || []);
+ 
+   for (const streamer of currentStreamers) {
+     if (!streamer.online) continue;
+ 
+     const isNewlyLive = !prevOnlineRoomIds.has(streamer.roomId);
+     const alreadyNotified = notifiedRooms.has(streamer.roomId);
+ 
+     if (isNewlyLive && !alreadyNotified) {
+-      // 发送通知
+       try {
+         await chrome.notifications.create(streamer.roomId, {
+           type: 'basic',
+           iconUrl: 'icons/icon128.png',
+           title: `🔴 ${streamer.nickname} 开播了！`,
+           message: streamer.title || '正在直播',
+           contextMessage: `${streamer.category} · ${streamer.viewers} 人观看`,
+           buttons: [{ title: '进入直播间' }],
+           priority: 2
+         });
+         notifiedRooms.add(streamer.roomId);
+       } catch (e) {
+         console.error('通知创建失败:', e);
+       }
+     }
+   }
+ 
+-  // 清理已下播的房间通知记录
+   const onlineRoomIds = new Set(currentStreamers.filter(s => s.online).map(s => s.roomId));
+   const updatedNotified = [...notifiedRooms].filter(id => onlineRoomIds.has(id));
+   await StorageHelper.set('notifiedRooms', updatedNotified);
+ }
+ 
+ // === 通知按钮点击 ===
+ chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+   if (buttonIndex === 0) {
+     chrome.tabs.create({ url: `https://www.douyu.com/${notificationId}` });
+   }
+ });
+ 
+ chrome.notifications.onClicked.addListener((notificationId) => {
+   chrome.tabs.create({ url: `https://www.douyu.com/${notificationId}` });
+ });
+ 
+ // === 消息处理 ===
+ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+   switch (message.type) {
+-    case 'TEST_COOKIE':
+-      // 测试 Cookie 有效性
+-      DouyuAPI.testCookie(message.cookie).then(result => {
+-        if (result.valid) {
+-          StorageHelper.set('_cookieError', null);
+-        }
+-        sendResponse(result);
+-      });
+-      return true; // 异步响应
+-
+     case 'MANUAL_REFRESH':
+-      // 手动触发刷新
+-      refreshFollowList().then(() => sendResponse({ ok: true }));
++      refreshRooms().then(() => sendResponse({ ok: true }));
+       return true;
+ 
+     case 'SETTINGS_UPDATED':
+-      // 设置更新后重建定时器
+       createAlarm().then(() => sendResponse({ ok: true }));
+       return true;
+ 
++    case 'ADD_ROOM':
++      handleAddRoom(message.roomId).then(sendResponse);
++      return true;
++
++    case 'REMOVE_ROOM':
++      handleRemoveRoom(message.roomId).then(sendResponse);
++      return true;
++
+     default:
+       sendResponse({ ok: false });
+   }
+ });
++
++// === 房间管理 ===
++async function handleAddRoom(roomId) {
++  // 验证房间号格式
++  if (!roomId || !/^\d+$/.test(roomId.trim())) {
++    return { ok: false, error: '房间号格式无效' };
++  }
++  roomId = roomId.trim();
++
++  // 检查是否已存在
++  const rooms = (await StorageHelper.get('rooms')) || [];
++  if (rooms.some(r => r.roomId === roomId)) {
++    return { ok: false, error: '该房间已在监控列表中' };
++  }
++
++  // 解析主播名
++  const resolveResult = await DouyuAPI.resolveNickname(roomId);
++  if (!resolveResult.success) {
++    return { ok: false, error: '房间号不存在或无法访问' };
++  }
++
++  // 添加到列表
++  rooms.push({ roomId, nickname: resolveResult.nickname });
++  await StorageHelper.set('rooms', rooms);
++
++  // 立即触发一次刷新，使新房间的状态尽快可见
++  refreshRooms();
++
++  return { ok: true, nickname: resolveResult.nickname };
++}
++
++async function handleRemoveRoom(roomId) {
++  let rooms = (await StorageHelper.get('rooms')) || [];
++  rooms = rooms.filter(r => r.roomId !== roomId);
++  await StorageHelper.set('rooms', rooms);
++
++  // 也从 streamers 中移除
++  let streamers = (await StorageHelper.get('streamers')) || [];
++  streamers = streamers.filter(s => s.roomId !== roomId);
++  await StorageHelper.set('streamers', streamers);
++
++  return { ok: true };
++}
+diff --git a/lib/douyu-api.js b/lib/douyu-api.js
+index 5d074a1..1a68be3 100644
+--- a/lib/douyu-api.js
++++ b/lib/douyu-api.js
+@@ -1,105 +1,102 @@
+-// lib/douyu-api.js — 斗鱼 API 封装
++// lib/douyu-api.js — 斗鱼 API 封装（公开 API，无需 Cookie）
+ 
+ const API_BASE = 'https://www.douyu.com';
+ 
+ const DouyuAPI = {
+   /**
+-   * 从 cookie 字符串解析为对象
+-   * @param {string} cookieString - "key1=val1; key2=val2; ..."
+-   * @returns {object}
++   * 查询单个房间的直播信息
++   * 使用公开 API，不需要 Cookie
++   * @param {string} roomId
++   * @returns {Promise<{success: boolean, data?: object, error?: string}>}
+    */
+-  _parseCookie(cookieString) {
+-    const result = {};
+-    cookieString.split(';').forEach(pair => {
+-      const [key, ...rest] = pair.trim().split('=');
+-      if (key && rest.length > 0) {
+-        result[key.trim()] = rest.join('=').trim();
+-      }
+-    });
+-    return result;
+-  },
+-
+-  /**
+-   * 验证 cookie 中是否包含必要字段
+-   * @param {string} cookieString
+-   * @returns {{ valid: boolean, missing: string[] }}
+-   */
+-  validateCookie(cookieString) {
+-    const required = ['acf_uid', 'acf_auth', 'acf_biz', 'acf_stk', 'acf_ct', 'acf_ltkid'];
+-    const parsed = this._parseCookie(cookieString);
+-    const missing = required.filter(key => !parsed[key]);
+-    return {
+-      valid: missing.length === 0,
+-      missing
+-    };
+-  },
+-
+-  /**
+-   * 获取关注列表（含直播状态）
+-   * @param {string} cookieString
+-   * @returns {Promise<{success: boolean, data?: Array, error?: string}>}
+-   */
+-  async fetchFollowList(cookieString) {
++  async fetchRoomInfo(roomId) {
+     try {
+-      const response = await fetch(`${API_BASE}/wgapi/livenc/liveweb/follow/list?sort=0&cid1=0`, {
++      const controller = new AbortController();
++      const timeout = setTimeout(() => controller.abort(), 10000);
++
++      const response = await fetch(`${API_BASE}/japi/room/info/${roomId}`, {
++        signal: controller.signal,
+         headers: {
+-          'Cookie': cookieString,
+           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+         }
+       });
++      clearTimeout(timeout);
+ 
+-      const result = await response.json();
++      const text = await response.text();
++      let result;
++      try {
++        result = JSON.parse(text);
++      } catch {
++        return { success: false, error: 'parse_error' };
++      }
+ 
+       if (result.error !== 0) {
+-        if (result.error === 1004 || result.error === 1003) {
+-          return { success: false, error: 'cookie_expired' };
+-        }
+         return { success: false, error: `api_error_${result.error}` };
+       }
+ 
+-      // 标准化数据
+-      const streamers = (result.data?.list || []).map(item => ({
+-        roomId: String(item.room_id),
+-        nickname: item.nickname || '',
+-        title: item.room_name || '',
+-        online: item.show_status === 1,
+-        coverUrl: item.room_src || '',
+-        avatarUrl: item.avatar || '',
+-        viewers: item.hn || 0,
+-        category: item.cname2 || item.cname1 || '',
+-        startTime: item.show_time ? item.show_time * 1000 : 0
+-      }));
+-
+-      return { success: true, data: streamers };
++      const d = result.data || {};
++      return {
++        success: true,
++        data: {
++          roomId: String(d.room_id || roomId),
++          nickname: d.owner_name || '',
++          title: d.room_name || '',
++          online: String(d.show_status) === '1',
++          coverUrl: d.room_src || '',
++          avatarUrl: d.owner_avatar || '',
++          viewers: parseInt(d.hn, 10) || 0,
++          category: d.cate_name || '',
++          startTime: d.show_time ? parseInt(d.show_time, 10) * 1000 : 0
++        }
++      };
+     } catch (err) {
++      if (err.name === 'AbortError') {
++        return { success: false, error: 'timeout' };
++      }
+       return { success: false, error: 'network_error', message: err.message };
+     }
+   },
+ 
+   /**
+-   * 测试 Cookie 是否有效
+-   * @param {string} cookieString
+-   * @returns {Promise<{valid: boolean, error?: string}>}
++   * 批量查询多个房间的直播状态（并行）
++   * @param {string[]} roomIds
++   * @returns {Promise<{success: boolean, data: Array, errors: Array}>}
+    */
+-  async testCookie(cookieString) {
+-    try {
+-      const response = await fetch(`${API_BASE}/japi/roomuserlevel/apinc/levelInfo?rid=1`, {
+-        headers: {
+-          'Cookie': cookieString,
+-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+-        }
+-      });
++  async batchFetchRoomInfo(roomIds) {
++    if (!roomIds || roomIds.length === 0) {
++      return { success: true, data: [], errors: [] };
++    }
+ 
+-      const result = await response.json();
++    const results = await Promise.allSettled(
++      roomIds.map(id => this.fetchRoomInfo(id))
++    );
+ 
+-      if (result.error === 0) {
+-        return { valid: true };
++    const data = [];
++    const errors = [];
++
++    results.forEach((r, index) => {
++      if (r.status === 'fulfilled' && r.value.success) {
++        data.push(r.value.data);
++      } else if (r.status === 'fulfilled') {
++        errors.push({ roomId: roomIds[index], error: r.value.error });
++      } else {
++        errors.push({ roomId: roomIds[index], error: r.reason?.message || 'unknown' });
+       }
+-      return { valid: false, error: 'cookie_invalid' };
+-    } catch (err) {
+-      return { valid: false, error: 'network_error' };
++    });
++
++    return { success: data.length > 0, data, errors };
++  },
++
++  /**
++   * 根据房间号解析主播名（添加房间时使用）
++   * @param {string} roomId
++   * @returns {Promise<{success: boolean, nickname?: string, error?: string}>}
++   */
++  async resolveNickname(roomId) {
++    const result = await this.fetchRoomInfo(roomId);
++    if (result.success) {
++      return { success: true, nickname: result.data.nickname };
+     }
++    return { success: false, error: result.error };
+   }
+ };
+-
+-// 通过 importScripts 加载，全局可用
+diff --git a/lib/storage.js b/lib/storage.js
+index 34dd121..c122d00 100644
+--- a/lib/storage.js
++++ b/lib/storage.js
+@@ -30,24 +30,21 @@ const StorageHelper = {
+ 
+   /**
+    * 清空存储
+    */
+   async clear() {
+     await chrome.storage.local.clear();
+   }
+ };
+ 
+ const DEFAULT_STORAGE = {
+-  cookie: {
+-    value: '',
+-    lastChecked: 0
+-  },
++  rooms: [],
+   streamers: [],
+   lastRefresh: 0,
+   notifiedRooms: [],
+   settings: {
+     refreshInterval: 60,
+     notificationsEnabled: true
+   }
+ };
+ 
+ // 通过 importScripts 加载，全局可用
+diff --git a/options/options.css b/options/options.css
+index 50b4248..481093f 100644
+--- a/options/options.css
++++ b/options/options.css
+@@ -276,10 +276,105 @@ textarea:focus {
+ }
+ 
+ .card.help a {
+   color: var(--accent);
+   text-decoration: none;
+ }
+ 
+ .card.help a:hover {
+   text-decoration: underline;
+ }
++
++/* === 房间号管理 === */
++.input-row {
++  display: flex;
++  gap: 8px;
++  margin-bottom: 4px;
++}
++
++.input-row input[type="text"] {
++  flex: 1;
++  padding: 8px 12px;
++  font-size: 14px;
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  outline: none;
++  transition: border-color 0.2s;
++}
++
++.input-row input[type="text"]:focus {
++  border-color: var(--accent);
++  box-shadow: 0 0 0 3px rgba(255, 68, 0, 0.15);
++}
++
++.room-list {
++  margin-top: 16px;
++}
++
++.room-item {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 8px 12px;
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  margin-bottom: 6px;
++  background: #fafafa;
++  transition: background 0.15s;
++}
++
++.room-item:hover {
++  background: #f0f0f0;
++}
++
++.room-status {
++  font-size: 14px;
++  flex-shrink: 0;
++}
++
++.room-id {
++  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
++  font-size: 13px;
++  color: var(--text-secondary);
++  flex-shrink: 0;
++}
++
++.room-nickname {
++  flex: 1;
++  font-size: 14px;
++  color: var(--text);
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.btn-remove {
++  width: 24px;
++  height: 24px;
++  border: none;
++  background: transparent;
++  color: #999;
++  font-size: 14px;
++  cursor: pointer;
++  border-radius: 4px;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  transition: color 0.15s, background 0.15s;
++  flex-shrink: 0;
++}
++
++.btn-remove:hover {
++  color: var(--error);
++  background: #fef2f2;
++}
++
++.empty-hint {
++  text-align: center;
++  padding: 20px;
++  color: #aaa;
++  font-size: 14px;
++}
++
++.empty-hint.hidden {
++  display: none;
++}
+diff --git a/options/options.html b/options/options.html
+index b58243e..7d467dc 100644
+--- a/options/options.html
++++ b/options/options.html
+@@ -1,58 +1,47 @@
+ <!DOCTYPE html>
+ <html lang="zh-CN">
+ <head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <link rel="stylesheet" href="options.css">
+-  <title>斗鱼关注开播通知 - 设置</title>
++  <title>斗鱼直播通知 - 设置</title>
+ </head>
+ <body>
+   <div class="container">
+     <h1>⚙️ 斗鱼直播通知 设置</h1>
+ 
+     <section class="card">
+-      <h2>🔑 Cookie 设置</h2>
+-      <p class="hint">从 douyu.com 登录后的 Cookie 中复制必要字段</p>
+-      <textarea id="cookieInput" rows="4" placeholder="acf_uid=xxx; acf_auth=xxx; acf_biz=xxx; acf_stk=xxx; acf_ct=xxx; acf_ltkid=xxx"></textarea>
+-      <div class="btn-row">
+-        <button id="saveCookieBtn" class="btn primary">💾 保存 Cookie</button>
+-        <button id="testCookieBtn" class="btn">🔗 测试连接</button>
++      <h2>📺 房间号管理</h2>
++      <p class="hint">添加要监控的斗鱼直播间房间号</p>
++      <div class="input-row">
++        <input type="text" id="roomIdInput" placeholder="输入房间号（如 12345）" autocomplete="off">
++        <button id="addRoomBtn" class="btn primary">➕ 添加</button>
+       </div>
+-      <div id="cookieStatus" class="status hidden"></div>
++      <div id="addStatus" class="status hidden"></div>
++      <div id="roomList" class="room-list"></div>
++      <div id="emptyRooms" class="empty-hint">尚未添加房间，请输入房间号并点击添加</div>
++      <button id="refreshStatusBtn" class="btn" style="margin-top:12px">🔄 刷新全部状态</button>
+     </section>
+ 
+     <section class="card">
+       <h2>⏱️ 刷新设置</h2>
+       <div class="setting-row">
+         <label for="refreshInterval">轮询间隔（秒，最小 60）：</label>
+         <input type="number" id="refreshInterval" min="60" value="60" step="30">
+       </div>
+       <button id="saveSettingsBtn" class="btn primary">💾 保存设置</button>
+       <div id="settingsStatus" class="status hidden"></div>
+     </section>
+ 
+     <section class="card">
+       <h2>🔔 通知设置</h2>
+       <label class="toggle-row">
+         <input type="checkbox" id="notificationsEnabled" checked>
+         <span>新开播时发送桌面通知</span>
+       </label>
+     </section>
+-
+-    <section class="card help">
+-      <h2>❓ 如何获取 Cookie？</h2>
+-      <ol>
+-        <li>在 Chrome 中登录 <a href="https://www.douyu.com" target="_blank">douyu.com</a></li>
+-        <li>按 F12 打开开发者工具 → Application → Cookies → <code>www.douyu.com</code></li>
+-        <li>确认包含以下字段：
+-          <code>acf_uid</code>、<code>acf_auth</code>、<code>acf_biz</code>、<code>acf_stk</code>、<code>acf_ct</code>、<code>acf_ltkid</code>
+-        </li>
+-        <li>复制所有 Cookie 字符串</li>
+-        <li>粘贴到上方的输入框并保存</li>
+-      </ol>
+-    </section>
+   </div>
+ 
+   <script src="options.js"></script>
+ </body>
+ </html>
+diff --git a/options/options.js b/options/options.js
+index bc43f33..2c2dc38 100644
+--- a/options/options.js
++++ b/options/options.js
+@@ -1,102 +1,138 @@
+-// options/options.js — 设置页逻辑
++// options/options.js — 设置页逻辑（房间号管理版）
+ 
+ document.addEventListener('DOMContentLoaded', async () => {
+-  // 加载已有的设置
+   const data = await chrome.storage.local.get(null);
+ 
+-  const cookieInput = document.getElementById('cookieInput');
++  const roomIdInput = document.getElementById('roomIdInput');
++  const addRoomBtn = document.getElementById('addRoomBtn');
++  const roomList = document.getElementById('roomList');
++  const emptyRooms = document.getElementById('emptyRooms');
++  const refreshStatusBtn = document.getElementById('refreshStatusBtn');
++  const addStatus = document.getElementById('addStatus');
+   const refreshInterval = document.getElementById('refreshInterval');
+   const notificationsEnabled = document.getElementById('notificationsEnabled');
+ 
+-  if (data.cookie?.value) {
+-    cookieInput.value = data.cookie.value;
+-  }
++  // 加载现有设置
+   if (data.settings?.refreshInterval) {
+     refreshInterval.value = data.settings.refreshInterval;
+   }
+   if (data.settings?.notificationsEnabled !== undefined) {
+     notificationsEnabled.checked = data.settings.notificationsEnabled;
+   }
+ 
+-  // 保存 Cookie
+-  document.getElementById('saveCookieBtn').addEventListener('click', async () => {
+-    const value = cookieInput.value.trim();
+-    if (!value) {
+-      showStatus('cookieStatus', '请输入 Cookie', 'error');
+-      return;
+-    }
++  // 渲染房间列表
++  async function renderRoomList() {
++    const rooms = (await chrome.storage.local.get('rooms')).rooms || [];
++    const streamers = (await chrome.storage.local.get('streamers')).streamers || [];
++    const onlineMap = {};
++    streamers.forEach(s => { onlineMap[s.roomId] = s.online; });
+ 
+-    // 客户端侧 cookie 字段校验
+-    const required = ['acf_uid', 'acf_auth', 'acf_biz', 'acf_stk', 'acf_ct', 'acf_ltkid'];
+-    const parsed = {};
+-    value.split(';').forEach(pair => {
+-      const [k, ...rest] = pair.trim().split('=');
+-      if (k && rest.length > 0) parsed[k.trim()] = rest.join('=').trim();
+-    });
+-    const missing = required.filter(k => !parsed[k]);
+-    if (missing.length > 0) {
+-      showStatus('cookieStatus', '缺少必要字段: ' + missing.join(', '), 'error');
++    if (rooms.length === 0) {
++      roomList.innerHTML = '';
++      emptyRooms.classList.remove('hidden');
+       return;
+     }
+-
+-    await chrome.storage.local.set({
+-      cookie: { value, lastChecked: Date.now() },
+-      _cookieError: null
++    emptyRooms.classList.add('hidden');
++
++    roomList.innerHTML = rooms.map(r => {
++      const isOnline = onlineMap[r.roomId];
++      const statusIcon = isOnline ? '🟢' : '🔴';
++      return `
++        <div class="room-item" data-room-id="${r.roomId}">
++          <span class="room-status">${statusIcon}</span>
++          <span class="room-id">${r.roomId}</span>
++          <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
++          <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
++        </div>
++      `;
++    }).join('');
++
++    // 删除按钮事件
++    document.querySelectorAll('.btn-remove').forEach(btn => {
++      btn.addEventListener('click', async (e) => {
++        e.stopPropagation();
++        const roomId = btn.dataset.roomId;
++        chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId }, () => {
++          renderRoomList();
++        });
++      });
+     });
++  }
+ 
+-    showStatus('cookieStatus', '✅ Cookie 已保存', 'success');
+-  });
+-
+-  // 测试连接
+-  document.getElementById('testCookieBtn').addEventListener('click', async () => {
+-    const value = cookieInput.value.trim();
+-    if (!value) {
+-      showStatus('cookieStatus', '请先输入 Cookie', 'error');
++  // 添加房间
++  async function handleAddRoom() {
++    const roomId = roomIdInput.value.trim();
++    if (!roomId) {
++      showStatus(addStatus, '请输入房间号', 'error');
++      return;
++    }
++    if (!/^\d+$/.test(roomId)) {
++      showStatus(addStatus, '房间号必须为纯数字', 'error');
+       return;
+     }
+ 
+-    showStatus('cookieStatus', '⏳ 正在测试连接...', 'info');
++    showStatus(addStatus, '⏳ 正在解析房间号...', 'info');
++    addRoomBtn.disabled = true;
+ 
+-    // 通过 background 测试
+-    chrome.runtime.sendMessage({ type: 'TEST_COOKIE', cookie: value }, (response) => {
+-      if (response?.valid) {
+-        showStatus('cookieStatus', '✅ Cookie 有效，连接成功！', 'success');
++    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId }, (response) => {
++      addRoomBtn.disabled = false;
++      if (response?.ok) {
++        roomIdInput.value = '';
++        showStatus(addStatus, `✅ 已添加：${response.nickname}`, 'success');
++        renderRoomList();
+       } else {
+-        showStatus('cookieStatus', `❌ 连接失败：${response?.error || 'Cookie 无效或已过期'}`, 'error');
++        showStatus(addStatus, `❌ ${response?.error || '添加失败'}`, 'error');
+       }
+     });
++  }
++
++  addRoomBtn.addEventListener('click', handleAddRoom);
++  roomIdInput.addEventListener('keydown', (e) => {
++    if (e.key === 'Enter') handleAddRoom();
++  });
++
++  // 刷新全部状态
++  refreshStatusBtn.addEventListener('click', () => {
++    chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, () => {
++      renderRoomList();
++      showStatus(addStatus, '🔄 状态已刷新', 'success');
++      setTimeout(() => addStatus.classList.add('hidden'), 2000);
++    });
+   });
+ 
+   // 保存设置
+   document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
+     const interval = Math.max(60, parseInt(refreshInterval.value, 10) || 60);
+     refreshInterval.value = interval;
+-
+     await chrome.storage.local.set({
+       settings: {
+         refreshInterval: interval,
+         notificationsEnabled: notificationsEnabled.checked
+       }
+     });
+-
+-    // 通知 background 重建定时器
+     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
+-
+-    showStatus('settingsStatus', '✅ 设置已保存', 'success');
++    showStatus(document.getElementById('settingsStatus'), '✅ 设置已保存', 'success');
+   });
+ 
+-  // 通知开关实时保存
+   notificationsEnabled.addEventListener('change', async () => {
+     const data = await chrome.storage.local.get('settings');
+     const settings = data.settings || {};
+     settings.notificationsEnabled = notificationsEnabled.checked;
+     await chrome.storage.local.set({ settings });
+   });
++
++  // 初始渲染
++  await renderRoomList();
+ });
+ 
+-function showStatus(elementId, message, type) {
+-  const el = document.getElementById(elementId);
++function showStatus(el, message, type) {
+   el.textContent = message;
+   el.className = `status ${type}`;
+   el.classList.remove('hidden');
+ }
++
++function escapeHtml(str) {
++  const div = document.createElement('div');
++  div.textContent = str;
++  return div.innerHTML;
++}
+diff --git a/popup/popup.html b/popup/popup.html
+index 02ceadc..e8f12f9 100644
+--- a/popup/popup.html
++++ b/popup/popup.html
+@@ -6,27 +6,23 @@
+   <link rel="stylesheet" href="popup.css">
+ </head>
+ <body>
+   <div id="app">
+     <header>
+       <h1>🔴 斗鱼关注</h1>
+       <span id="onlineCount" class="badge">0</span>
+     </header>
+ 
+     <div id="loading" class="state-msg">加载中...</div>
+-    <div id="noCookie" class="state-msg hidden">
+-      <p>⚠️ 未配置 Cookie</p>
+-      <p class="sub">请前往 <a href="#" id="openOptions">设置页</a> 配置 Cookie</p>
+-    </div>
+-    <div id="cookieExpired" class="state-msg hidden">
+-      <p>⚠️ Cookie 已过期</p>
+-      <p class="sub">请前往 <a href="#" id="openOptionsExpired">设置页</a> 更新 Cookie</p>
++    <div id="noRoom" class="state-msg hidden">
++      <p>⚠️ 未配置监控房间</p>
++      <p class="sub">请前往 <a href="#" id="openOptions">设置页</a> 添加房间号</p>
+     </div>
+     <div id="emptyState" class="state-msg hidden">
+       <p>☕ 当前没有主播开播</p>
+     </div>
+     <div id="errorState" class="state-msg hidden">
+       <p>❌ 网络异常</p>
+       <p class="sub">请稍后重试</p>
+     </div>
+ 
+     <div id="streamerList" class="hidden"></div>
+diff --git a/popup/popup.js b/popup/popup.js
+index f6b9435..c78d796 100644
+--- a/popup/popup.js
++++ b/popup/popup.js
+@@ -1,63 +1,54 @@
+ // popup.js — 弹窗逻辑
+ 
+ document.addEventListener('DOMContentLoaded', async () => {
+   const streamerList = document.getElementById('streamerList');
+   const onlineCount = document.getElementById('onlineCount');
+   const loading = document.getElementById('loading');
+-  const noCookie = document.getElementById('noCookie');
+-  const cookieExpired = document.getElementById('cookieExpired');
++  const noRoom = document.getElementById('noRoom');
+   const emptyState = document.getElementById('emptyState');
+   const errorState = document.getElementById('errorState');
+ 
+   // 打开设置页
+   document.getElementById('openOptions').addEventListener('click', openOptions);
+-  document.getElementById('openOptionsExpired').addEventListener('click', openOptions);
+   document.getElementById('settingsBtn').addEventListener('click', openOptions);
+ 
+   // 刷新按钮
+   document.getElementById('refreshBtn').addEventListener('click', async () => {
+     chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, () => {
+       loadData();
+     });
+   });
+ 
+   async function openOptions() {
+     chrome.runtime.openOptionsPage();
+   }
+ 
+   await loadData();
+ });
+ 
+ async function loadData() {
+   // Show loading, hide everything else
+   document.getElementById('loading').classList.remove('hidden');
+-  document.getElementById('noCookie').classList.add('hidden');
+-  document.getElementById('cookieExpired').classList.add('hidden');
++  document.getElementById('noRoom').classList.add('hidden');
+   document.getElementById('emptyState').classList.add('hidden');
+   document.getElementById('errorState').classList.add('hidden');
+   document.getElementById('streamerList').classList.add('hidden');
+ 
+   try {
+     const data = await chrome.storage.local.get(null);
+     document.getElementById('loading').classList.add('hidden');
+ 
+-    // Cookie 检查
+-    const cookie = data.cookie;
+-    if (!cookie || !cookie.value) {
+-      document.getElementById('noCookie').classList.remove('hidden');
+-      return;
+-    }
+-
+-    // 检查是否标记为过期
+-    if (data._cookieError === 'expired') {
+-      document.getElementById('cookieExpired').classList.remove('hidden');
++    // 房间号检查
++    const rooms = data.rooms;
++    if (!rooms || rooms.length === 0) {
++      document.getElementById('noRoom').classList.remove('hidden');
+       return;
+     }
+ 
+     const streamers = data.streamers || [];
+     const onlineStreamers = streamers.filter(s => s.online);
+ 
+     if (onlineStreamers.length === 0) {
+       document.getElementById('emptyState').classList.remove('hidden');
+       document.getElementById('onlineCount').textContent = '0';
+       return;

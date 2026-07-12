@@ -73,25 +73,7 @@ body {
   margin-bottom: 8px;
 }
 
-/* Cookie textarea */
-textarea {
-  width: 100%;
-  padding: 10px 12px;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
-  font-size: 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  resize: vertical;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-  color: var(--text);
-  background: var(--card-bg);
-}
 
-textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(255, 68, 0, 0.15);
-}
 
 /* 按钮 */
 .btn-row {
@@ -250,39 +232,7 @@ textarea:focus {
   display: block;
 }
 
-/* 帮助卡片 */
-.card.help {
-  background: #fafafa;
-}
 
-.card.help ol {
-  padding-left: 20px;
-  font-size: 0.9rem;
-  line-height: 1.8;
-  color: var(--text);
-}
-
-.card.help li {
-  margin-bottom: 6px;
-}
-
-.card.help code {
-  background: #f0f0f0;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
-  font-size: 0.85rem;
-  color: var(--accent);
-}
-
-.card.help a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.card.help a:hover {
-  text-decoration: underline;
-}
 
 /* === 房间号管理 === */
 .input-row {

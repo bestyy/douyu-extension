@@ -7,7 +7,10 @@ importScripts('lib/douyu-api.js');
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await StorageHelper.getAll();
   if (Object.keys(existing).length === 0) {
-    await chrome.storage.local.set(DEFAULT_STORAGE);
+    await chrome.storage.local.set({
+      ...DEFAULT_STORAGE,
+      _firstRun: true
+    });
   }
   await createAlarm();
 });
@@ -162,6 +165,13 @@ async function handleAddRoom(roomId) {
   rooms.push({ roomId, nickname: resolveResult.nickname });
   await StorageHelper.set('rooms', rooms);
 
+  // Pre-add to notifiedRooms to prevent immediate notification
+  const notified = (await StorageHelper.get('notifiedRooms')) || [];
+  if (!notified.includes(roomId)) {
+    notified.push(roomId);
+    await StorageHelper.set('notifiedRooms', notified);
+  }
+
   // 立即触发一次刷新，使新房间的状态尽快可见
   refreshRooms();
 
@@ -177,6 +187,10 @@ async function handleRemoveRoom(roomId) {
   let streamers = (await StorageHelper.get('streamers')) || [];
   streamers = streamers.filter(s => s.roomId !== roomId);
   await StorageHelper.set('streamers', streamers);
+
+  // Update badge
+  const onlineCount = streamers.filter(s => s.online).length;
+  chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
 
   return { ok: true };
 }

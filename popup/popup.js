@@ -41,6 +41,11 @@ async function loadData() {
     // 房间号检查
     const rooms = data.rooms;
     if (!rooms || rooms.length === 0) {
+      if (data.cookie && data.cookie.value) {
+        // Old cookie data exists - show migration hint
+        document.getElementById('noRoomSub').innerHTML = 
+          '已升级到新版本！旧版 Cookie 配置已不再可用。<br>请前往 <a href="#" id="openOptions">设置页</a> 添加房间号';
+      }
       document.getElementById('noRoom').classList.remove('hidden');
       return;
     }
