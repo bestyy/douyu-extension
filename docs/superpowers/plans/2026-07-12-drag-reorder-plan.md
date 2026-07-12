@@ -207,8 +207,9 @@ return `
         let newOrder;
         if (dragIndex < dropIndex) {
           // 向下拖：移除 dragSrc，插入到 dropIndex（或之后）
+          // 注意：移除 dragSrc 后目标项索引变为 dropIndex - 1
           newOrder = items.filter(el => el !== dragSrc);
-          const insertAt = insertAfter ? dropIndex : dropIndex;
+          const insertAt = insertAfter ? dropIndex : dropIndex - 1;
           newOrder.splice(insertAt, 0, dragSrc);
         } else {
           // 向上拖

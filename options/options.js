@@ -53,6 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         : '<span class="platform-tag douyu">斗鱼</span>';
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
+          <span class="drag-handle" draggable="false">⠿</span>
           <span class="room-status">${statusIcon}</span>
           ${platformLabel}
           <span class="room-id">${r.roomId}</span>
@@ -74,6 +75,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
       });
     });
+
+    // 初始化拖拽排序
+    initDragAndDrop();
   }
 
   // 添加房间
@@ -141,6 +145,146 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 初始渲染
   await renderRoomList();
+
+  // === 拖拽排序 ===
+  function initDragAndDrop() {
+    const roomList = document.getElementById('roomList');
+    let dragSrc = null;
+
+    // 只有从手柄开始 mouse down 才启用 draggable
+    // 每次重新设置前先清除所有历史状态
+    roomList.querySelectorAll('.drag-handle').forEach(handle => {
+      handle.addEventListener('mousedown', (e) => {
+        e.stopPropagation(); // 防止冒泡到 room-item
+        // 重置所有项，防止残留 draggable 状态
+        roomList.querySelectorAll('.room-item').forEach(el => {
+          el.setAttribute('draggable', 'false');
+        });
+        const item = handle.closest('.room-item');
+        item.setAttribute('draggable', 'true');
+      });
+    });
+
+    roomList.querySelectorAll('.room-item').forEach(item => {
+      item.addEventListener('dragstart', (e) => {
+        // 只有 draggable=true 时才会触发 dragstart，
+        // 而 draggable=true 仅通过手柄 mousedown 设置，
+        // 所以此处不需要额外验证
+        dragSrc = item;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', item.dataset.roomId);
+      });
+
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+
+        if (item === dragSrc) return;
+
+        // 判断插入位置：鼠标位于当前项上半部分还是下半部分
+        const rect = item.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        const isAfter = e.clientY > midY;
+
+        // 清除所有项的 drag-over 类
+        roomList.querySelectorAll('.room-item').forEach(el => {
+          el.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+
+        item.classList.add(isAfter ? 'drag-over-bottom' : 'drag-over-top');
+      });
+
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+
+      item.addEventListener('dragend', () => {
+        roomList.querySelectorAll('.room-item').forEach(el => {
+          el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+          el.setAttribute('draggable', 'false');
+        });
+        dragSrc = null;
+      });
+
+      item.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        if (item === dragSrc) return;
+
+        // 计算新顺序
+        const items = Array.from(roomList.querySelectorAll('.room-item'));
+        const dragIndex = items.indexOf(dragSrc);
+        const dropIndex = items.indexOf(item);
+
+        const rect = item.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        const insertAfter = e.clientY > midY;
+
+        // 构建新的排序
+        let newOrder;
+        if (dragIndex < dropIndex) {
+          // 向下拖：移除 dragSrc，插入到 dropIndex（或之后）
+          newOrder = items.filter(el => el !== dragSrc);
+          // 移除 dragSrc 后，目标项索引变为 dropIndex - 1
+          const insertAt = insertAfter ? dropIndex : dropIndex - 1;
+          newOrder.splice(insertAt, 0, dragSrc);
+        } else {
+          // 向上拖
+          newOrder = items.filter(el => el !== dragSrc);
+          const insertAt = insertAfter ? dropIndex + 1 : dropIndex;
+          newOrder.splice(insertAt, 0, dragSrc);
+        }
+
+        // 从 DOM 顺序提取新 rooms 数组
+        const newRooms = newOrder.map(el => ({
+          roomId: el.dataset.roomId,
+          platform: el.dataset.platform || 'douyu'
+        }));
+
+        // 直接写入 storage
+        const { rooms = [], streamers = [] } = await chrome.storage.local.get(['rooms', 'streamers']);
+
+        // 按新 rooms 顺序重建 rooms 对象（保留 nickname）
+        const roomMap = {};
+        rooms.forEach(r => {
+          roomMap[`${r.platform}_${r.roomId}`] = r;
+        });
+        const updatedRooms = newRooms.map(r => ({
+          ...roomMap[`${r.platform}_${r.roomId}`],
+          roomId: r.roomId,
+          platform: r.platform
+        }));
+
+        // 同步重排 streamers
+        const streamerMap = {};
+        streamers.forEach(s => {
+          streamerMap[`${s.platform}_${s.roomId}`] = s;
+        });
+        const updatedStreamers = [];
+        for (const r of newRooms) {
+          const key = `${r.platform}_${r.roomId}`;
+          if (streamerMap[key]) {
+            updatedStreamers.push(streamerMap[key]);
+          }
+        }
+
+        await chrome.storage.local.set({
+          rooms: updatedRooms,
+          streamers: updatedStreamers
+        });
+
+        // 清除样式并重新渲染
+        roomList.querySelectorAll('.room-item').forEach(el => {
+          el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+          el.setAttribute('draggable', 'false');
+        });
+        dragSrc = null;
+
+        // 重新渲染列表（保持新视觉顺序）
+        await renderRoomList();
+      });
+    });
+  }
 });
 
 function showStatus(el, message, type) {
