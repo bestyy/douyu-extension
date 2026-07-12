@@ -114,3 +114,27 @@ chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) =
 chrome.notifications.onClicked.addListener((notificationId) => {
   chrome.tabs.create({ url: `https://www.douyu.com/${notificationId}` });
 });
+
+// === 消息处理 ===
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message.type) {
+    case 'TEST_COOKIE':
+      // 测试 Cookie 有效性
+      DouyuAPI.testCookie(message.cookie).then(sendResponse);
+      return true; // 异步响应
+
+    case 'MANUAL_REFRESH':
+      // 手动触发刷新
+      refreshFollowList().then(() => sendResponse({ ok: true }));
+      return true;
+
+    case 'SETTINGS_UPDATED':
+      // 设置更新后重建定时器
+      createAlarm();
+      sendResponse({ ok: true });
+      break;
+
+    default:
+      sendResponse({ ok: false });
+  }
+});
