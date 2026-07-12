@@ -133,6 +133,7 @@ const sizes = [
 ];
 
 const iconsDir = path.join(__dirname, "icons");
+fs.mkdirSync(iconsDir, { recursive: true });
 
 for (const { size, file } of sizes) {
   const pngData = createPNG(size, size);
