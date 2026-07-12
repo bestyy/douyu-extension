@@ -82,9 +82,15 @@ function renderStreamerList(container, streamers) {
 
     const coverImg = document.createElement('img');
     coverImg.className = 'streamer-cover';
-    coverImg.src = s.coverUrl || 'icons/icon48.png';
     coverImg.alt = s.nickname;
-    coverImg.addEventListener('error', () => { coverImg.src = 'icons/icon48.png'; });
+    coverImg.referrerPolicy = 'no-referrer';
+    const fallbackSrc = chrome.runtime.getURL('icons/icon48.png');
+    coverImg.addEventListener('error', () => {
+      if (coverImg.src !== fallbackSrc) {
+        coverImg.src = fallbackSrc;
+      }
+    });
+    coverImg.src = s.coverUrl || fallbackSrc;
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'streamer-info';
