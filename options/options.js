@@ -153,6 +153,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 只有从手柄开始 mouse down 才启用 draggable
     // 每次重新设置前先清除所有历史状态
+    // document mouseup 重置所有 draggable，防止未实际拖拽时状态残留
+    const resetDraggable = () => {
+      roomList.querySelectorAll('.room-item').forEach(el => {
+        el.setAttribute('draggable', 'false');
+      });
+    };
+    document.addEventListener('mouseup', resetDraggable);
+
     roomList.querySelectorAll('.drag-handle').forEach(handle => {
       handle.addEventListener('mousedown', (e) => {
         e.stopPropagation(); // 防止冒泡到 room-item
@@ -265,13 +273,23 @@ document.addEventListener('DOMContentLoaded', async () => {
           const key = `${r.platform}_${r.roomId}`;
           if (streamerMap[key]) {
             updatedStreamers.push(streamerMap[key]);
+          } else {
+            // 保留基本信息，等待下次刷新填充完整数据
+            updatedStreamers.push({ roomId: r.roomId, platform: r.platform, online: false });
           }
         }
 
-        await chrome.storage.local.set({
-          rooms: updatedRooms,
-          streamers: updatedStreamers
-        });
+        try {
+          await chrome.storage.local.set({
+            rooms: updatedRooms,
+            streamers: updatedStreamers
+          });
+        } catch (err) {
+          console.error('拖拽排序保存失败:', err);
+          // 回滚到原始顺序
+          await renderRoomList();
+          return;
+        }
 
         // 清除样式并重新渲染
         roomList.querySelectorAll('.room-item').forEach(el => {
