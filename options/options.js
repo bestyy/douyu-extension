@@ -51,8 +51,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       const platformLabel = r.platform === 'bilibili'
         ? '<span class="platform-tag bilibili">B站</span>'
         : '<span class="platform-tag douyu">斗鱼</span>';
+      const checkedAttr = r.notify === true ? 'checked' : '';
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
+          <input type="checkbox" class="room-notify-cb" ${checkedAttr}>
           <span class="drag-handle" draggable="false">⠿</span>
           <span class="room-status">${statusIcon}</span>
           ${platformLabel}
@@ -73,6 +75,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId, platform }, () => {
           renderRoomList();
         });
+      });
+    });
+
+    // checkbox 变化事件 — 更新 notify 状态
+    document.querySelectorAll('.room-notify-cb').forEach(cb => {
+      cb.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const roomItem = cb.closest('.room-item');
+        const roomId = roomItem.dataset.roomId;
+        const platform = roomItem.dataset.platform || 'douyu';
+
+        const { rooms = [] } = await chrome.storage.local.get('rooms');
+        const updatedRooms = rooms.map(r => {
+          if (r.roomId === roomId && r.platform === platform) {
+            return { ...r, notify: cb.checked };
+          }
+          return r;
+        });
+        await chrome.storage.local.set({ rooms: updatedRooms });
       });
     });
 
