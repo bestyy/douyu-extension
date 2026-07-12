@@ -8,7 +8,10 @@ chrome.runtime.onInstalled.addListener(async () => {
   // 初始化默认存储
   const existing = await StorageHelper.getAll();
   if (Object.keys(existing).length === 0) {
-    await chrome.storage.local.set(DEFAULT_STORAGE);
+    await chrome.storage.local.set({
+      ...DEFAULT_STORAGE,
+      _firstRun: true
+    });
   }
   // 创建定时器
   await createAlarm();
@@ -65,10 +68,18 @@ async function refreshFollowList() {
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#FF4400' });
 
-  // 检测新开播 → 发送通知
-  const settings = await StorageHelper.get('settings');
-  if (settings?.notificationsEnabled !== false) {
-    await checkNewLiveStreams(result.data, prevOnlineRoomIds);
+  // 首次运行：标记所有在线主播为已通知，不发送通知
+  const isFirstRun = (await StorageHelper.get('_firstRun')) === true;
+  if (isFirstRun) {
+    const onlineIds = result.data.filter(s => s.online).map(s => s.roomId);
+    await StorageHelper.set('notifiedRooms', onlineIds);
+    await StorageHelper.set('_firstRun', null);
+  } else {
+    // 检测新开播 → 发送通知
+    const settings = await StorageHelper.get('settings');
+    if (settings?.notificationsEnabled !== false) {
+      await checkNewLiveStreams(result.data, prevOnlineRoomIds);
+    }
   }
 }
 
@@ -84,17 +95,20 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineRoomIds) {
 
     if (isNewlyLive && !alreadyNotified) {
       // 发送通知
-      chrome.notifications.create(streamer.roomId, {
-        type: 'basic',
-        iconUrl: streamer.coverUrl || 'icons/icon128.png',
-        title: `🔴 ${streamer.nickname} 开播了！`,
-        message: streamer.title || '正在直播',
-        contextMessage: `${streamer.category} · ${streamer.viewers} 人观看`,
-        buttons: [{ title: '进入直播间' }],
-        priority: 2
-      });
-
-      notifiedRooms.add(streamer.roomId);
+      try {
+        await chrome.notifications.create(streamer.roomId, {
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: `🔴 ${streamer.nickname} 开播了！`,
+          message: streamer.title || '正在直播',
+          contextMessage: `${streamer.category} · ${streamer.viewers} 人观看`,
+          buttons: [{ title: '进入直播间' }],
+          priority: 2
+        });
+        notifiedRooms.add(streamer.roomId);
+      } catch (e) {
+        console.error('通知创建失败:', e);
+      }
     }
   }
 
@@ -120,7 +134,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'TEST_COOKIE':
       // 测试 Cookie 有效性
-      DouyuAPI.testCookie(message.cookie).then(sendResponse);
+      DouyuAPI.testCookie(message.cookie).then(result => {
+        if (result.valid) {
+          StorageHelper.set('_cookieError', null);
+        }
+        sendResponse(result);
+      });
       return true; // 异步响应
 
     case 'MANUAL_REFRESH':
@@ -130,9 +149,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SETTINGS_UPDATED':
       // 设置更新后重建定时器
-      createAlarm();
-      sendResponse({ ok: true });
-      break;
+      createAlarm().then(() => sendResponse({ ok: true }));
+      return true;
 
     default:
       sendResponse({ ok: false });

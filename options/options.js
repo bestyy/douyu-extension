@@ -26,8 +26,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    // 客户端侧 cookie 字段校验
+    const required = ['acf_uid', 'acf_auth', 'acf_biz', 'acf_stk', 'acf_ct', 'acf_ltkid'];
+    const parsed = {};
+    value.split(';').forEach(pair => {
+      const [k, ...rest] = pair.trim().split('=');
+      if (k && rest.length > 0) parsed[k.trim()] = rest.join('=').trim();
+    });
+    const missing = required.filter(k => !parsed[k]);
+    if (missing.length > 0) {
+      showStatus('cookieStatus', '缺少必要字段: ' + missing.join(', '), 'error');
+      return;
+    }
+
     await chrome.storage.local.set({
-      cookie: { value, lastChecked: Date.now() }
+      cookie: { value, lastChecked: Date.now() },
+      _cookieError: null
     });
 
     showStatus('cookieStatus', '✅ Cookie 已保存', 'success');
