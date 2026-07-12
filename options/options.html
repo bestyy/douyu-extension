@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="options.css">
+  <title>斗鱼关注开播通知 - 设置</title>
+</head>
+<body>
+  <div class="container">
+    <h1>⚙️ 斗鱼直播通知 设置</h1>
+
+    <section class="card">
+      <h2>🔑 Cookie 设置</h2>
+      <p class="hint">从 douyu.com 登录后的 Cookie 中复制必要字段</p>
+      <textarea id="cookieInput" rows="4" placeholder="acf_uid=xxx; acf_auth=xxx; acf_biz=xxx; acf_stk=xxx; acf_ct=xxx; acf_ltkid=xxx"></textarea>
+      <div class="btn-row">
+        <button id="saveCookieBtn" class="btn primary">💾 保存 Cookie</button>
+        <button id="testCookieBtn" class="btn">🔗 测试连接</button>
+      </div>
+      <div id="cookieStatus" class="status hidden"></div>
+    </section>
+
+    <section class="card">
+      <h2>⏱️ 刷新设置</h2>
+      <div class="setting-row">
+        <label for="refreshInterval">轮询间隔（秒，最小 60）：</label>
+        <input type="number" id="refreshInterval" min="60" value="60" step="30">
+      </div>
+      <button id="saveSettingsBtn" class="btn primary">💾 保存设置</button>
+      <div id="settingsStatus" class="status hidden"></div>
+    </section>
+
+    <section class="card">
+      <h2>🔔 通知设置</h2>
+      <label class="toggle-row">
+        <input type="checkbox" id="notificationsEnabled" checked>
+        <span>新开播时发送桌面通知</span>
+      </label>
+    </section>
+
+    <section class="card help">
+      <h2>❓ 如何获取 Cookie？</h2>
+      <ol>
+        <li>在 Chrome 中登录 <a href="https://www.douyu.com" target="_blank">douyu.com</a></li>
+        <li>按 F12 打开开发者工具 → Application → Cookies → <code>www.douyu.com</code></li>
+        <li>确认包含以下字段：
+          <code>acf_uid</code>、<code>acf_auth</code>、<code>acf_biz</code>、<code>acf_stk</code>、<code>acf_ct</code>、<code>acf_ltkid</code>
+        </li>
+        <li>复制所有 Cookie 字符串</li>
+        <li>粘贴到上方的输入框并保存</li>
+      </ol>
+    </section>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
