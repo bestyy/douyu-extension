@@ -150,7 +150,9 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
   }
 
   const onlineKeys = new Set(
-    currentStreamers.filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
+    currentStreamers
+      .filter(s => s.online && s.notify === true)
+      .map(s => `${s.platform}_${s.roomId}`)
   );
   const updatedNotified = rawNotified.filter(n =>
     onlineKeys.has(`${n.platform}_${n.roomId}`)
@@ -238,7 +240,7 @@ async function handleAddRoom(rawRoomId, platform) {
   }
 
   // 添加到列表
-  rooms.push({ roomId, nickname: resolveResult.nickname, platform });
+  rooms.push({ roomId, nickname: resolveResult.nickname, platform, notify: false });
   await StorageHelper.set('rooms', rooms);
 
   const notified = (await StorageHelper.get('notifiedRooms')) || [];

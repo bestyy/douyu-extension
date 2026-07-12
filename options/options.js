@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const checkedAttr = r.notify === true ? 'checked' : '';
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
-          <input type="checkbox" class="room-notify-cb" ${checkedAttr}>
+          <input type="checkbox" class="room-notify-cb" title="开播通知" ${checkedAttr}>
           <span class="drag-handle" draggable="false">⠿</span>
           <span class="room-status">${statusIcon}</span>
           ${platformLabel}
