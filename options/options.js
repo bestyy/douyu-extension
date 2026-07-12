@@ -1,16 +1,18 @@
-// options/options.js — 设置页逻辑
+// options/options.js — 设置页逻辑（房间号管理版）
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // 加载已有的设置
   const data = await chrome.storage.local.get(null);
 
-  const cookieInput = document.getElementById('cookieInput');
+  const roomIdInput = document.getElementById('roomIdInput');
+  const addRoomBtn = document.getElementById('addRoomBtn');
+  const roomList = document.getElementById('roomList');
+  const emptyRooms = document.getElementById('emptyRooms');
+  const refreshStatusBtn = document.getElementById('refreshStatusBtn');
+  const addStatus = document.getElementById('addStatus');
   const refreshInterval = document.getElementById('refreshInterval');
   const notificationsEnabled = document.getElementById('notificationsEnabled');
 
-  if (data.cookie?.value) {
-    cookieInput.value = data.cookie.value;
-  }
+  // 加载现有设置
   if (data.settings?.refreshInterval) {
     refreshInterval.value = data.settings.refreshInterval;
   }
@@ -18,52 +20,83 @@ document.addEventListener('DOMContentLoaded', async () => {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
   }
 
-  // 保存 Cookie
-  document.getElementById('saveCookieBtn').addEventListener('click', async () => {
-    const value = cookieInput.value.trim();
-    if (!value) {
-      showStatus('cookieStatus', '请输入 Cookie', 'error');
+  // 渲染房间列表
+  async function renderRoomList() {
+    const rooms = (await chrome.storage.local.get('rooms')).rooms || [];
+    const streamers = (await chrome.storage.local.get('streamers')).streamers || [];
+    const onlineMap = {};
+    streamers.forEach(s => { onlineMap[s.roomId] = s.online; });
+
+    if (rooms.length === 0) {
+      roomList.innerHTML = '';
+      emptyRooms.classList.remove('hidden');
+      return;
+    }
+    emptyRooms.classList.add('hidden');
+
+    roomList.innerHTML = rooms.map(r => {
+      const isOnline = onlineMap[r.roomId];
+      const statusIcon = isOnline ? '🟢' : '🔴';
+      return `
+        <div class="room-item" data-room-id="${r.roomId}">
+          <span class="room-status">${statusIcon}</span>
+          <span class="room-id">${r.roomId}</span>
+          <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
+          <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
+        </div>
+      `;
+    }).join('');
+
+    // 删除按钮事件
+    document.querySelectorAll('.btn-remove').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const roomId = btn.dataset.roomId;
+        chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId }, () => {
+          renderRoomList();
+        });
+      });
+    });
+  }
+
+  // 添加房间
+  async function handleAddRoom() {
+    const roomId = roomIdInput.value.trim();
+    if (!roomId) {
+      showStatus(addStatus, '请输入房间号', 'error');
+      return;
+    }
+    if (!/^\d+$/.test(roomId)) {
+      showStatus(addStatus, '房间号必须为纯数字', 'error');
       return;
     }
 
-    // 客户端侧 cookie 字段校验
-    const required = ['acf_uid', 'acf_auth', 'acf_biz', 'acf_stk', 'acf_ct', 'acf_ltkid'];
-    const parsed = {};
-    value.split(';').forEach(pair => {
-      const [k, ...rest] = pair.trim().split('=');
-      if (k && rest.length > 0) parsed[k.trim()] = rest.join('=').trim();
-    });
-    const missing = required.filter(k => !parsed[k]);
-    if (missing.length > 0) {
-      showStatus('cookieStatus', '缺少必要字段: ' + missing.join(', '), 'error');
-      return;
-    }
+    showStatus(addStatus, '⏳ 正在解析房间号...', 'info');
+    addRoomBtn.disabled = true;
 
-    await chrome.storage.local.set({
-      cookie: { value, lastChecked: Date.now() },
-      _cookieError: null
+    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId }, (response) => {
+      addRoomBtn.disabled = false;
+      if (response?.ok) {
+        roomIdInput.value = '';
+        showStatus(addStatus, `✅ 已添加：${response.nickname}`, 'success');
+        renderRoomList();
+      } else {
+        showStatus(addStatus, `❌ ${response?.error || '添加失败'}`, 'error');
+      }
     });
+  }
 
-    showStatus('cookieStatus', '✅ Cookie 已保存', 'success');
+  addRoomBtn.addEventListener('click', handleAddRoom);
+  roomIdInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleAddRoom();
   });
 
-  // 测试连接
-  document.getElementById('testCookieBtn').addEventListener('click', async () => {
-    const value = cookieInput.value.trim();
-    if (!value) {
-      showStatus('cookieStatus', '请先输入 Cookie', 'error');
-      return;
-    }
-
-    showStatus('cookieStatus', '⏳ 正在测试连接...', 'info');
-
-    // 通过 background 测试
-    chrome.runtime.sendMessage({ type: 'TEST_COOKIE', cookie: value }, (response) => {
-      if (response?.valid) {
-        showStatus('cookieStatus', '✅ Cookie 有效，连接成功！', 'success');
-      } else {
-        showStatus('cookieStatus', `❌ 连接失败：${response?.error || 'Cookie 无效或已过期'}`, 'error');
-      }
+  // 刷新全部状态
+  refreshStatusBtn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, () => {
+      renderRoomList();
+      showStatus(addStatus, '🔄 状态已刷新', 'success');
+      setTimeout(() => addStatus.classList.add('hidden'), 2000);
     });
   });
 
@@ -71,32 +104,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
     const interval = Math.max(60, parseInt(refreshInterval.value, 10) || 60);
     refreshInterval.value = interval;
-
     await chrome.storage.local.set({
       settings: {
         refreshInterval: interval,
         notificationsEnabled: notificationsEnabled.checked
       }
     });
-
-    // 通知 background 重建定时器
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
-
-    showStatus('settingsStatus', '✅ 设置已保存', 'success');
+    showStatus(document.getElementById('settingsStatus'), '✅ 设置已保存', 'success');
   });
 
-  // 通知开关实时保存
   notificationsEnabled.addEventListener('change', async () => {
     const data = await chrome.storage.local.get('settings');
     const settings = data.settings || {};
     settings.notificationsEnabled = notificationsEnabled.checked;
     await chrome.storage.local.set({ settings });
   });
+
+  // 初始渲染
+  await renderRoomList();
 });
 
-function showStatus(elementId, message, type) {
-  const el = document.getElementById(elementId);
+function showStatus(el, message, type) {
   el.textContent = message;
   el.className = `status ${type}`;
   el.classList.remove('hidden');
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }

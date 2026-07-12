@@ -283,3 +283,98 @@ textarea:focus {
 .card.help a:hover {
   text-decoration: underline;
 }
+
+/* === 房间号管理 === */
+.input-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input-row input[type="text"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 68, 0, 0.15);
+}
+
+.room-list {
+  margin-top: 16px;
+}
+
+.room-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: #fafafa;
+  transition: background 0.15s;
+}
+
+.room-item:hover {
+  background: #f0f0f0;
+}
+
+.room-status {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.room-id {
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.room-nickname {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-remove {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-remove:hover {
+  color: var(--error);
+  background: #fef2f2;
+}
+
+.empty-hint {
+  text-align: center;
+  padding: 20px;
+  color: #aaa;
+  font-size: 14px;
+}
+
+.empty-hint.hidden {
+  display: none;
+}
