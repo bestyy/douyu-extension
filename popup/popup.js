@@ -4,14 +4,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const streamerList = document.getElementById('streamerList');
   const onlineCount = document.getElementById('onlineCount');
   const loading = document.getElementById('loading');
-  const noCookie = document.getElementById('noCookie');
-  const cookieExpired = document.getElementById('cookieExpired');
+  const noRoom = document.getElementById('noRoom');
   const emptyState = document.getElementById('emptyState');
   const errorState = document.getElementById('errorState');
 
   // 打开设置页
   document.getElementById('openOptions').addEventListener('click', openOptions);
-  document.getElementById('openOptionsExpired').addEventListener('click', openOptions);
   document.getElementById('settingsBtn').addEventListener('click', openOptions);
 
   // 刷新按钮
@@ -31,8 +29,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function loadData() {
   // Show loading, hide everything else
   document.getElementById('loading').classList.remove('hidden');
-  document.getElementById('noCookie').classList.add('hidden');
-  document.getElementById('cookieExpired').classList.add('hidden');
+  document.getElementById('noRoom').classList.add('hidden');
   document.getElementById('emptyState').classList.add('hidden');
   document.getElementById('errorState').classList.add('hidden');
   document.getElementById('streamerList').classList.add('hidden');
@@ -41,16 +38,10 @@ async function loadData() {
     const data = await chrome.storage.local.get(null);
     document.getElementById('loading').classList.add('hidden');
 
-    // Cookie 检查
-    const cookie = data.cookie;
-    if (!cookie || !cookie.value) {
-      document.getElementById('noCookie').classList.remove('hidden');
-      return;
-    }
-
-    // 检查是否标记为过期
-    if (data._cookieError === 'expired') {
-      document.getElementById('cookieExpired').classList.remove('hidden');
+    // 房间号检查
+    const rooms = data.rooms;
+    if (!rooms || rooms.length === 0) {
+      document.getElementById('noRoom').classList.remove('hidden');
       return;
     }
 
