@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  async function openOptions() {
+  function openOptions() {
     chrome.runtime.openOptionsPage();
   }
 
@@ -77,7 +77,10 @@ function renderStreamerList(container, streamers) {
     const card = document.createElement('div');
     card.className = 'streamer-card';
     card.addEventListener('click', () => {
-      chrome.tabs.create({ url: `https://www.douyu.com/${s.roomId}` });
+      const url = s.platform === 'bilibili'
+        ? `https://live.bilibili.com/${s.roomId}`
+        : `https://www.douyu.com/${s.roomId}`;
+      chrome.tabs.create({ url });
     });
 
     const coverImg = document.createElement('img');
@@ -94,8 +97,11 @@ function renderStreamerList(container, streamers) {
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'streamer-info';
+    const platformTag = s.platform === 'bilibili'
+      ? '<span class="platform-tag bilibili">B站</span>'
+      : '<span class="platform-tag douyu">斗鱼</span>';
     infoDiv.innerHTML = `
-      <div class="streamer-name">${escapeHtml(s.nickname)}</div>
+      <div class="streamer-name">${platformTag}${escapeHtml(s.nickname)}</div>
       <div class="streamer-title">${escapeHtml(s.title || '正在直播')}</div>
       <div class="streamer-meta">
         <span class="live-dot"></span>

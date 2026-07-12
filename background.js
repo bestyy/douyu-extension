@@ -2,10 +2,15 @@
 
 importScripts('lib/storage.js');
 importScripts('lib/douyu-api.js');
+importScripts('lib/bilibili-api.js');
 
 // === 初始化 ===
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await StorageHelper.getAll();
+
+  // 数据迁移（旧版本→新版本）
+  await StorageHelper.migrateLegacyFormat();
+
   if (Object.keys(existing).length === 0) {
     await chrome.storage.local.set({
       ...DEFAULT_STORAGE,
@@ -36,86 +41,120 @@ async function refreshRooms() {
     return; // 未配置房间号，跳过
   }
 
-  const roomIds = rooms.map(r => r.roomId);
-  const result = await DouyuAPI.batchFetchRoomInfo(roomIds);
+  const douyuRooms = rooms.filter(r => r.platform === 'douyu');
+  const bilibiliRooms = rooms.filter(r => r.platform === 'bilibili');
+  const douyuIds = douyuRooms.map(r => r.roomId);
+  const bilibiliIds = bilibiliRooms.map(r => r.roomId);
 
-  if (!result.success && result.data.length === 0) {
-    return; // 所有房间查询失败，保留上次缓存
+  const [douyuResult, bilibiliResult] = await Promise.all([
+    douyuIds.length > 0
+      ? DouyuAPI.batchFetchRoomInfo(douyuIds)
+      : { success: true, data: [] },
+    bilibiliIds.length > 0
+      ? BilibiliAPI.batchFetchRoomInfo(bilibiliIds)
+      : { success: true, data: [] }
+  ]);
+
+  const allData = [
+    ...douyuResult.data.map(d => ({ ...d, platform: 'douyu' })),
+    ...bilibiliResult.data.map(d => ({ ...d, platform: 'bilibili' }))
+  ];
+
+  if (allData.length === 0) {
+    return;
   }
 
-  // 获取之前的直播列表用于检测新开播
   const prevStreamers = (await StorageHelper.get('streamers')) || [];
-  const prevOnlineRoomIds = new Set(
-    prevStreamers.filter(s => s.online).map(s => s.roomId)
+  const prevOnline = new Set(
+    prevStreamers.filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
   );
 
-  // 更新存储
-  await StorageHelper.set('streamers', result.data);
+  await StorageHelper.set('streamers', allData);
   await StorageHelper.set('lastRefresh', Date.now());
 
-  // 更新 badge
-  const onlineCount = result.data.filter(s => s.online).length;
+  const onlineCount = allData.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#FF4400' });
 
-  // 首次运行标记
   const isFirstRun = (await StorageHelper.get('_firstRun')) === true;
   if (isFirstRun) {
-    const onlineIds = result.data.filter(s => s.online).map(s => s.roomId);
-    await StorageHelper.set('notifiedRooms', onlineIds);
+    const onlineEntries = allData.filter(s => s.online).map(s => ({
+      roomId: s.roomId,
+      platform: s.platform
+    }));
+    await StorageHelper.set('notifiedRooms', onlineEntries);
     await StorageHelper.set('_firstRun', null);
   } else {
-    // 检测新开播 → 发送通知
     const settings = await StorageHelper.get('settings');
     if (settings?.notificationsEnabled !== false) {
-      await checkNewLiveStreams(result.data, prevOnlineRoomIds);
+      await checkNewLiveStreams(allData, prevOnline);
     }
   }
 }
 
 // === 新开播通知 ===
-async function checkNewLiveStreams(currentStreamers, prevOnlineRoomIds) {
-  const notifiedRooms = new Set((await StorageHelper.get('notifiedRooms')) || []);
+async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
+  const rawNotified = (await StorageHelper.get('notifiedRooms')) || [];
+  const notifiedMap = new Set(
+    rawNotified.map(n => `${n.platform}_${n.roomId}`)
+  );
 
   for (const streamer of currentStreamers) {
     if (!streamer.online) continue;
 
-    const isNewlyLive = !prevOnlineRoomIds.has(streamer.roomId);
-    const alreadyNotified = notifiedRooms.has(streamer.roomId);
+    const compositeKey = `${streamer.platform}_${streamer.roomId}`;
+    const isNewlyLive = !prevOnlineSet.has(compositeKey);
+    const alreadyNotified = notifiedMap.has(compositeKey);
 
     if (isNewlyLive && !alreadyNotified) {
+      const platformPrefix = streamer.platform === 'bilibili' ? '🟣 [B站]' : '🔴 [斗鱼]';
       try {
-        await chrome.notifications.create(streamer.roomId, {
+        await chrome.notifications.create(compositeKey, {
           type: 'basic',
           iconUrl: 'icons/icon128.png',
-          title: `🔴 ${streamer.nickname} 开播了！`,
+          title: `${platformPrefix} ${streamer.nickname} 开播了！`,
           message: streamer.title || '正在直播',
           contextMessage: `${streamer.category} · ${streamer.viewers} 人观看`,
           buttons: [{ title: '进入直播间' }],
           priority: 2
         });
-        notifiedRooms.add(streamer.roomId);
+        notifiedMap.add(compositeKey);
       } catch (e) {
         console.error('通知创建失败:', e);
       }
     }
   }
 
-  const onlineRoomIds = new Set(currentStreamers.filter(s => s.online).map(s => s.roomId));
-  const updatedNotified = [...notifiedRooms].filter(id => onlineRoomIds.has(id));
+  const onlineKeys = new Set(
+    currentStreamers.filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
+  );
+  const updatedNotified = rawNotified.filter(n =>
+    onlineKeys.has(`${n.platform}_${n.roomId}`)
+  );
   await StorageHelper.set('notifiedRooms', updatedNotified);
 }
 
 // === 通知按钮点击 ===
 chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
   if (buttonIndex === 0) {
-    chrome.tabs.create({ url: `https://www.douyu.com/${notificationId}` });
+    const url = getLiveUrlFromNotificationId(notificationId);
+    if (url) chrome.tabs.create({ url });
   }
 });
 
 chrome.notifications.onClicked.addListener((notificationId) => {
-  chrome.tabs.create({ url: `https://www.douyu.com/${notificationId}` });
+  const url = getLiveUrlFromNotificationId(notificationId);
+  if (url) chrome.tabs.create({ url });
 });
+
+function getLiveUrlFromNotificationId(notificationId) {
+  const [platform, ...rest] = notificationId.split('_');
+  const roomId = rest.join('_');
+  if (platform === 'bilibili') {
+    return `https://live.bilibili.com/${roomId}`;
+  }
+  return `https://www.douyu.com/${roomId}`;
+}
 
 // === 消息处理 ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -129,11 +168,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'ADD_ROOM':
-      handleAddRoom(message.roomId).then(sendResponse);
+      handleAddRoom(message.roomId, message.platform).then(sendResponse);
       return true;
 
     case 'REMOVE_ROOM':
-      handleRemoveRoom(message.roomId).then(sendResponse);
+      handleRemoveRoom(message.roomId, message.platform).then(sendResponse);
       return true;
 
     default:
@@ -142,50 +181,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // === 房间管理 ===
-async function handleAddRoom(roomId) {
-  // 验证房间号格式
-  if (!roomId || !/^\d+$/.test(roomId.trim())) {
+async function handleAddRoom(rawRoomId, platform) {
+  const roomId = rawRoomId?.trim();
+  if (!roomId || !/^\d+$/.test(roomId)) {
     return { ok: false, error: '房间号格式无效' };
   }
-  roomId = roomId.trim();
+  platform = platform || 'douyu';
 
-  // 检查是否已存在
+  // 检查是否已存在（同平台+同房间号）
   const rooms = (await StorageHelper.get('rooms')) || [];
-  if (rooms.some(r => r.roomId === roomId)) {
+  if (rooms.some(r => r.roomId === roomId && r.platform === platform)) {
     return { ok: false, error: '该房间已在监控列表中' };
   }
 
-  // 解析主播名
-  const resolveResult = await DouyuAPI.resolveNickname(roomId);
+  // 根据平台选择 API
+  const api = platform === 'bilibili' ? BilibiliAPI : DouyuAPI;
+  const resolveResult = await api.resolveNickname(roomId);
   if (!resolveResult.success) {
     return { ok: false, error: '房间号不存在或无法访问' };
   }
 
   // 添加到列表
-  rooms.push({ roomId, nickname: resolveResult.nickname });
+  rooms.push({ roomId, nickname: resolveResult.nickname, platform });
   await StorageHelper.set('rooms', rooms);
 
-  // Pre-add to notifiedRooms to prevent immediate notification
   const notified = (await StorageHelper.get('notifiedRooms')) || [];
-  if (!notified.includes(roomId)) {
-    notified.push(roomId);
+  if (!notified.some(n => n.roomId === roomId && n.platform === platform)) {
+    notified.push({ roomId, platform });
     await StorageHelper.set('notifiedRooms', notified);
   }
 
-  // 立即触发一次刷新，使新房间的状态尽快可见
   refreshRooms();
 
   return { ok: true, nickname: resolveResult.nickname };
 }
 
-async function handleRemoveRoom(roomId) {
+async function handleRemoveRoom(roomId, platform) {
+  platform = platform || 'douyu';
   let rooms = (await StorageHelper.get('rooms')) || [];
-  rooms = rooms.filter(r => r.roomId !== roomId);
+  rooms = rooms.filter(r => !(r.roomId === roomId && r.platform === platform));
   await StorageHelper.set('rooms', rooms);
 
   // 也从 streamers 中移除
   let streamers = (await StorageHelper.get('streamers')) || [];
-  streamers = streamers.filter(s => s.roomId !== roomId);
+  streamers = streamers.filter(s => !(s.roomId === roomId && s.platform === platform));
   await StorageHelper.set('streamers', streamers);
 
   // Update badge

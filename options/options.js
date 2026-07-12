@@ -27,10 +27,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 渲染房间列表
   async function renderRoomList() {
-    const rooms = (await chrome.storage.local.get('rooms')).rooms || [];
-    const streamers = (await chrome.storage.local.get('streamers')).streamers || [];
+    const { rooms = [], streamers = [] } = await chrome.storage.local.get(['rooms', 'streamers']);
     const onlineMap = {};
-    streamers.forEach(s => { onlineMap[s.roomId] = s.online; });
+    streamers.forEach(s => { onlineMap[`${s.platform}_${s.roomId}`] = s.online; });
 
     if (rooms.length === 0) {
       roomList.innerHTML = '';
@@ -40,11 +39,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     emptyRooms.classList.add('hidden');
 
     roomList.innerHTML = rooms.map(r => {
-      const isOnline = onlineMap[r.roomId];
+      const isOnline = onlineMap[`${r.platform}_${r.roomId}`];
       const statusIcon = isOnline ? '🟢' : '🔴';
+      const platformLabel = r.platform === 'bilibili'
+        ? '<span class="platform-tag bilibili">B站</span>'
+        : '<span class="platform-tag douyu">斗鱼</span>';
       return `
-        <div class="room-item" data-room-id="${r.roomId}">
+        <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
           <span class="room-status">${statusIcon}</span>
+          ${platformLabel}
           <span class="room-id">${r.roomId}</span>
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
           <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
@@ -56,8 +59,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelectorAll('.btn-remove').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const roomItem = btn.closest('.room-item');
         const roomId = btn.dataset.roomId;
-        chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId }, () => {
+        const platform = roomItem.dataset.platform || 'douyu';
+        chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId, platform }, () => {
           renderRoomList();
         });
       });
@@ -67,6 +72,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 添加房间
   async function handleAddRoom() {
     const roomId = roomIdInput.value.trim();
+    const platform = document.getElementById('roomPlatform').value;
     if (!roomId) {
       showStatus(addStatus, '请输入房间号', 'error');
       return;
@@ -79,7 +85,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStatus(addStatus, '⏳ 正在解析房间号...', 'info');
     addRoomBtn.disabled = true;
 
-    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId }, (response) => {
+    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId, platform }, (response) => {
       addRoomBtn.disabled = false;
       if (response?.ok) {
         roomIdInput.value = '';

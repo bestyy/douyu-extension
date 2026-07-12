@@ -26,6 +26,7 @@
     "notifications"
   ],
   "host_permissions": [
-    "https://www.douyu.com/*"
+    "https://www.douyu.com/*",
+    "https://api.live.bilibili.com/*"
   ]
 }

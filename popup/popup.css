@@ -191,3 +191,28 @@ footer button + button {
 footer button:active {
   background: #e0e0e0;
 }
+
+/* 平台标签（popup 版） */
+.platform-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+  margin-right: 4px;
+  line-height: 1.4;
+}
+
+.platform-tag.douyu {
+  background: #fff0eb;
+  color: #FF4400;
+  border: 1px solid #ffd5cc;
+}
+
+.platform-tag.bilibili {
+  background: #f0f4ff;
+  color: #00a1d6;
+  border: 1px solid #cce5ff;
+}

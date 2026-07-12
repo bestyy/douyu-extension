@@ -328,3 +328,43 @@ body {
 .empty-hint.hidden {
   display: none;
 }
+
+/* 平台标签 */
+.platform-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.platform-tag.douyu {
+  background: #fff0eb;
+  color: #FF4400;
+  border: 1px solid #ffd5cc;
+}
+
+.platform-tag.bilibili {
+  background: #f0f4ff;
+  color: #00a1d6;
+  border: 1px solid #cce5ff;
+}
+
+/* 平台下拉选择 */
+#roomPlatform {
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  cursor: pointer;
+}
+
+#roomPlatform:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 68, 0, 0.15);
+}
