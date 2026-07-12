@@ -75,11 +75,17 @@ async function refreshRooms() {
   for (const room of rooms) {
     const key = `${room.platform}_${room.roomId}`;
     const fresh = apiData.get(key);
+    let item;
     if (fresh) {
-      mergedData.push(fresh);
+      item = { ...fresh };
     } else if (prevMap[key]) {
-      mergedData.push(prevMap[key]);
+      item = { ...prevMap[key] };
+    } else {
+      continue;
     }
+    // 传递 per-room 通知标记
+    item.notify = room.notify === true;
+    mergedData.push(item);
   }
 
   if (mergedData.length === 0) {
@@ -118,6 +124,7 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
 
   for (const streamer of currentStreamers) {
     if (!streamer.online) continue;
+    if (streamer.notify !== true) continue;  // 跳过用户设置了不通知的房间
 
     const compositeKey = `${streamer.platform}_${streamer.roomId}`;
     const isNewlyLive = !prevOnlineSet.has(compositeKey);
