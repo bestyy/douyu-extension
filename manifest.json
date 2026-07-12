@@ -27,6 +27,7 @@
   ],
   "host_permissions": [
     "https://www.douyu.com/*",
-    "https://api.live.bilibili.com/*"
+    "https://api.live.bilibili.com/*",
+    "https://api.bilibili.com/*"
   ]
 }

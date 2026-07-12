@@ -195,8 +195,20 @@ async function handleAddRoom(rawRoomId, platform) {
   }
 
   // 根据平台选择 API
-  const api = platform === 'bilibili' ? BilibiliAPI : DouyuAPI;
-  const resolveResult = await api.resolveNickname(roomId);
+  let api = platform === 'bilibili' ? BilibiliAPI : DouyuAPI;
+  let resolveResult = await api.resolveNickname(roomId);
+
+  // 如果所选平台解析失败，自动尝试另一个平台（兜底）
+  if (!resolveResult.success) {
+    const otherPlatform = platform === 'bilibili' ? 'douyu' : 'bilibili';
+    const otherApi = otherPlatform === 'bilibili' ? BilibiliAPI : DouyuAPI;
+    const otherResult = await otherApi.resolveNickname(roomId);
+    if (otherResult.success) {
+      platform = otherPlatform;
+      resolveResult = otherResult;
+    }
+  }
+
   if (!resolveResult.success) {
     return { ok: false, error: '房间号不存在或无法访问' };
   }
