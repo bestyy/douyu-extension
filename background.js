@@ -55,30 +55,47 @@ async function refreshRooms() {
       : { success: true, data: [] }
   ]);
 
-  const allData = [
-    ...douyuResult.data.map(d => ({ ...d, platform: 'douyu' })),
-    ...bilibiliResult.data.map(d => ({ ...d, platform: 'bilibili' }))
-  ];
-
-  if (allData.length === 0) {
-    return;
-  }
-
+  // 合并 API 成功数据与上一次状态（API 失败的房间保留旧数据）
   const prevStreamers = (await StorageHelper.get('streamers')) || [];
+  const prevMap = {};
+  prevStreamers.forEach(s => {
+    prevMap[`${s.platform}_${s.roomId}`] = s;
+  });
   const prevOnline = new Set(
     prevStreamers.filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
   );
 
-  await StorageHelper.set('streamers', allData);
+  // 按 roomId 索引 API 成功返回的结果
+  const apiData = new Map();
+  douyuResult.data.forEach(d => apiData.set(`douyu_${d.roomId}`, { ...d, platform: 'douyu' }));
+  bilibiliResult.data.forEach(d => apiData.set(`bilibili_${d.roomId}`, { ...d, platform: 'bilibili' }));
+
+  // 逐个房间合并：API 成功取新数据，失败保留旧数据
+  const mergedData = [];
+  for (const room of rooms) {
+    const key = `${room.platform}_${room.roomId}`;
+    const fresh = apiData.get(key);
+    if (fresh) {
+      mergedData.push(fresh);
+    } else if (prevMap[key]) {
+      mergedData.push(prevMap[key]);
+    }
+  }
+
+  if (mergedData.length === 0) {
+    return;
+  }
+
+  await StorageHelper.set('streamers', mergedData);
   await StorageHelper.set('lastRefresh', Date.now());
 
-  const onlineCount = allData.filter(s => s.online).length;
+  const onlineCount = mergedData.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#FF4400' });
 
   const isFirstRun = (await StorageHelper.get('_firstRun')) === true;
   if (isFirstRun) {
-    const onlineEntries = allData.filter(s => s.online).map(s => ({
+    const onlineEntries = mergedData.filter(s => s.online).map(s => ({
       roomId: s.roomId,
       platform: s.platform
     }));
@@ -87,7 +104,7 @@ async function refreshRooms() {
   } else {
     const settings = await StorageHelper.get('settings');
     if (settings?.notificationsEnabled !== false) {
-      await checkNewLiveStreams(allData, prevOnline);
+      await checkNewLiveStreams(mergedData, prevOnline);
     }
   }
 }
@@ -107,7 +124,7 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
     const alreadyNotified = notifiedMap.has(compositeKey);
 
     if (isNewlyLive && !alreadyNotified) {
-      const platformPrefix = streamer.platform === 'bilibili' ? '🟣 [B站]' : '🔴 [斗鱼]';
+      const platformPrefix = streamer.platform === 'bilibili' ? '[B站]' : '[斗鱼]';
       try {
         await chrome.notifications.create(compositeKey, {
           type: 'basic',
@@ -223,7 +240,7 @@ async function handleAddRoom(rawRoomId, platform) {
     await StorageHelper.set('notifiedRooms', notified);
   }
 
-  refreshRooms();
+  await refreshRooms();
 
   return { ok: true, nickname: resolveResult.nickname };
 }

@@ -39,8 +39,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     emptyRooms.classList.add('hidden');
 
     roomList.innerHTML = rooms.map(r => {
-      const isOnline = onlineMap[`${r.platform}_${r.roomId}`];
-      const statusIcon = isOnline ? '🟢' : '🔴';
+      const onlineStatus = onlineMap[`${r.platform}_${r.roomId}`];
+      let statusIcon;
+      if (onlineStatus === true) {
+        statusIcon = '🟢';
+      } else if (onlineStatus === false) {
+        statusIcon = '🔴';
+      } else {
+        statusIcon = '🟣';
+      }
       const platformLabel = r.platform === 'bilibili'
         ? '<span class="platform-tag bilibili">B站</span>'
         : '<span class="platform-tag douyu">斗鱼</span>';
