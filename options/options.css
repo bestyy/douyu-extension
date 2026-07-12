@@ -368,3 +368,41 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(255, 68, 0, 0.15);
 }
+
+/* === 拖拽排序 === */
+.drag-handle {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: #bbb;
+  font-size: 16px;
+  user-select: none;
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.drag-handle:hover {
+  color: #666;
+  background: #eee;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.room-item.dragging {
+  opacity: 0.4;
+  border-style: dashed;
+}
+
+.room-item.drag-over-top {
+  border-top: 2px solid var(--accent);
+}
+
+.room-item.drag-over-bottom {
+  border-bottom: 2px solid var(--accent);
+}
