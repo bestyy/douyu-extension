@@ -160,6 +160,29 @@ header h1 {
   100% { opacity: 1; transform: scale(1); }
 }
 
+/* 选项栏 — 在列表和底部按钮之间 */
+#optionsBar {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-top: 1px solid #e0e0e0;
+  background: #fff;
+  font-size: 12px;
+  color: #666;
+}
+
+#optionsBar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#optionsBar input[type="checkbox"] {
+  cursor: pointer;
+}
+
 /* FOOTER */
 footer {
   display: flex;

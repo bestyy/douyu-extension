@@ -19,6 +19,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // 当前标签页跳转设置
+  document.getElementById('currentTabCheck').addEventListener('change', async (e) => {
+    const { settings } = await chrome.storage.local.get('settings');
+    settings.openInCurrentTab = e.target.checked;
+    await chrome.storage.local.set({ settings });
+  });
+
   function openOptions() {
     chrome.runtime.openOptionsPage();
   }
@@ -40,6 +47,10 @@ async function loadData() {
 
     // 房间号检查
     const rooms = data.rooms;
+
+    // 加载当前标签页跳转设置
+    const settings = data.settings || {};
+    document.getElementById('currentTabCheck').checked = !!settings.openInCurrentTab;
     if (!rooms || rooms.length === 0) {
       if (data.cookie && data.cookie.value) {
         // Old cookie data exists - show migration hint
@@ -76,11 +87,16 @@ function renderStreamerList(container, streamers) {
   streamers.forEach(s => {
     const card = document.createElement('div');
     card.className = 'streamer-card';
-    card.addEventListener('click', () => {
+    card.addEventListener('click', async () => {
       const url = s.platform === 'bilibili'
         ? `https://live.bilibili.com/${s.roomId}`
         : `https://www.douyu.com/${s.roomId}`;
-      chrome.tabs.create({ url });
+      const { settings } = await chrome.storage.local.get('settings');
+      if (settings && settings.openInCurrentTab) {
+        chrome.tabs.update({ url });
+      } else {
+        chrome.tabs.create({ url });
+      }
     });
 
     const coverImg = document.createElement('img');
