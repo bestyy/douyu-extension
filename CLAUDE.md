@@ -41,11 +41,11 @@ douyu-extensions/
 ## Storage Schema
 
 ```
-rooms:          [{ roomId: string, nickname: string, platform: 'douyu'|'bilibili' }]  — 已添加的房间列表
+rooms:          [{ roomId: string, nickname: string, platform: 'douyu'|'bilibili', notify?: boolean }]  — 已添加的房间列表；notify 控制单房间通知开关，默认 false
 streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers, category, startTime, platform }]
 notifiedRooms:  [{ roomId: string, platform: string }]  — 已发送过通知的房间 ID
 lastRefresh:    timestamp
-settings:       { refreshInterval: number(秒), notificationsEnabled: boolean }
+settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean }
 ```
 
 ## Non-Obvious Commands & Workflows
@@ -56,6 +56,7 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean }
 - 设置变更：发送 `SETTINGS_UPDATED` 消息重建 alarm（更新刷新间隔）
 - 首次安装：`onInstalled` 初始化存储，标记 `_firstRun`，首次轮询时不发送通知
 - 刷新间隔：通过 `chrome.alarms` 实现，最小 60 秒
+- Per-room 通知开关：每个房间独立控制是否发送开播通知（`rooms[].notify`），新添加的房间默认 `notify: false`（不通知），用户需在设置页通过 checkbox 手动开启
 
 ## Gotchas
 
@@ -63,4 +64,6 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean }
 - **权限**：需要 `storage`、`alarms`、`notifications` 权限以及 `https://www.douyu.com/*`、`https://api.live.bilibili.com/*`、`https://api.bilibili.com/*` 主机权限
 - **Service Worker**：Chrome 可能因空闲超时终止 Service Worker，轮询由 `chrome.alarms` 触发自动唤醒
 - **通知格式**：通知标题自动添加 `[斗鱼]` 或 `[B站]` 前缀区分平台；通知 ID 使用 `platform_roomId` 格式
-- **`room_src`**（封面图）：斗鱼 `/betard/` API 返回相对路径（如 `asrpic/...avif/dy4`），已在 `fetchRoomInfo` 中自动补全 `https://www.douyu.com/` 前缀；`owner_avatar` 返回的是完整 URL，无需处理
+- **`room_src`**（封面图）：斗鱼 `/betard/` API 返回相对路径，`fetchRoomInfo` 中已做三级补全：`http` 开头直接使用，`//` 开头补 `https:`，否则补 `https://rpic.douyucdn.cn/`；`owner_avatar` 返回完整 URL，无需处理
+- **数据迁移**：`storage.js` 的 `migrateLegacyFormat` 在 `onInstalled` 时自动将旧格式（`notifiedRooms` 为 `string[]`、`rooms`/`streamers` 无 `platform` 字段）迁移到新格式（`{roomId, platform}[]`）
+- **封面图回退**：popup 中封面图加载失败时自动回退到 `icons/icon48.png`，且使用 `referrerPolicy: 'no-referrer'` 避免跨域引用问题
