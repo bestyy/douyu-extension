@@ -67,3 +67,13 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, o
 - **`room_src`**（封面图）：斗鱼 `/betard/` API 返回相对路径，`fetchRoomInfo` 中已做三级补全：`http` 开头直接使用，`//` 开头补 `https:`，否则补 `https://rpic.douyucdn.cn/`；`owner_avatar` 返回完整 URL，无需处理
 - **数据迁移**：`storage.js` 的 `migrateLegacyFormat` 在 `onInstalled` 时自动将旧格式（`notifiedRooms` 为 `string[]`、`rooms`/`streamers` 无 `platform` 字段）迁移到新格式（`{roomId, platform}[]`）
 - **封面图回退**：popup 中封面图加载失败时自动回退到 `icons/icon48.png`，且使用 `referrerPolicy: 'no-referrer'` 避免跨域引用问题
+
+## Agent skills
+
+### Issue tracker
+
+Issues 以本地 markdown 文件形式存放在 `.scratch/<feature-slug>/` 下。详见 `docs/agents/issue-tracker.md`。
+
+### Domain docs
+
+Single-context 布局：`CONTEXT.md` + `docs/adr/` 在仓库根目录。详见 `docs/agents/domain.md`。
