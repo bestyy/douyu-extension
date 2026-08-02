@@ -13,8 +13,11 @@ const barrageClient = new BarrageClient({
 });
 
 // === B站高能榜弹幕客户端 ===
-// 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次
-// 若 SW 直连被风控（如豆包+登录态），降级到页面通道（bilibili-page-bridge.js）
+// 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次。
+// SW 直连为主通道：认证参数与直播间页面弹幕连接逐字对齐（comet 2245 通道 +
+// support_ack/queue_uid/scene 字段 + spi 签发配对 buvid），实测 SW 环境
+// （chrome-extension Origin、无 Cookie 握手）同样可用（见 .pi/test-bili-comet.cjs）。
+// 若未来被风控（本轮全败且快速断开），onFallback 降级到页面通道。
 const bilibiliBarrageClient = new BilibiliBarrageClient({
   onRankCount: updateRankCount,
   onFallback: handleBiliChannelFallback
@@ -30,6 +33,19 @@ const VIEWER_SAMPLE_INTERVAL = 10; // 观众数采样间隔（分钟），与 sa
 async function isViewerFetchEnabled() {
   const settings = await StorageHelper.get('settings');
   return settings?.fetchViewerCount !== false;
+}
+
+// 检测 B站登录态：SESSDATA Cookie 存在即视为已登录。
+// 登录态下 SW 直连的弹幕 WS 握手携带登录 Cookie，实测必被 1006 风控；
+// 未登录（无 Cookie）时 SW 直连可用（见 .pi/test-bili-comet.cjs）。
+// 因此登录与否决定 B站采样走页面桥接还是 SW 直连。
+async function isBiliLoggedIn() {
+  try {
+    const cookie = await chrome.cookies.get({ url: 'https://www.bilibili.com', name: 'SESSDATA' });
+    return !!(cookie && cookie.value);
+  } catch (e) {
+    return false;
+  }
 }
 
 // 清除 streamers 中的观众数字段（关闭开关时调用，避免 popup 显示过期数据）
@@ -49,25 +65,41 @@ async function stripViewerCounts() {
 syncBarrageRooms();
 
 async function syncBarrageRooms() {
-  if (!(await isViewerFetchEnabled())) {
-    // 关闭观众数获取：停用页面通道，清除已存观众数，关闭桥接标签页
+  const viewerEnabled = await isViewerFetchEnabled();
+  const rooms = (await StorageHelper.get('rooms')) || [];
+  const hasBili = rooms.some(r => r.platform === 'bilibili');
+
+  if (!viewerEnabled) {
+    // 关闭观众数获取：清除已存观众数，停用页面通道并关闭桥接标签页
     biliPageChannelEnabled = false;
     await StorageHelper.set('biliPageChannelEnabled', false);
     await stripViewerCounts();
-    const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-    for (const tab of tabs) {
-      if (tab.url && tab.url.includes('dyext=1')) {
-        chrome.tabs.remove(tab.id).catch(() => {});
-      }
-    }
+    await closeBridgeTab();
     return;
   }
-  // 恢复页面通道降级状态（SW 重启后从 storage 恢复，避免反复直连→降级循环）
-  const pageEnabled = biliPageChannelEnabled
-    || (await StorageHelper.get('biliPageChannelEnabled')) === true;
-  if (pageEnabled) {
-    biliPageChannelEnabled = true;
+  if (!hasBili) {
+    // 无 B站房间：停用页面通道并关闭桥接标签页（斗鱼采样不受影响）
+    biliPageChannelEnabled = false;
+    await StorageHelper.set('biliPageChannelEnabled', false);
+    await closeBridgeTab();
+    return;
+  }
+  // 有 B站房间：通道选择 —— 登录态（SESSDATA）下 SW 直连握手必被 1006 风控，
+  // 必须走页面桥接；未登录时 SW 直连可用。持久化的降级标记（未登录时被风控
+  // 降级过）在 SW 重启后继续生效，与登录检测共同决定通道。
+  const useBridge = (await isBiliLoggedIn()) ||
+    (await StorageHelper.get('biliPageChannelEnabled')) === true;
+  if (useBridge !== biliPageChannelEnabled) {
+    biliPageChannelEnabled = useBridge;
+    await StorageHelper.set('biliPageChannelEnabled', useBridge);
+    console.log(`[bili] 通道切换为 ${useBridge ? '页面桥接' : 'SW 直连'}`);
+  }
+  if (useBridge) {
     await ensureBridgeTab();
+    // 同步最新房间列表给桥接页（页面通道为长连接模式，持续上报高能榜在线数）
+    await sendBiliSetRooms(rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId)));
+  } else {
+    await closeBridgeTab();
   }
 }
 
@@ -86,6 +118,7 @@ async function updateVipCount({ roomId, vipCount }) {
 }
 
 // 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）
+// 页面通道为长连接模式（每 4-6 秒推送一次），仅在数值变化时写 storage 与打日志
 async function updateRankCount({ roomId, rankCount }) {
   if (!(await isViewerFetchEnabled())) {
     return;
@@ -96,19 +129,23 @@ async function updateRankCount({ roomId, rankCount }) {
     console.warn(`[bili] updateRankCount 未找到匹配 streamers 条目 roomId=${roomId} rankCount=${rankCount} streamers=${streamers.length}条`);
     return;
   }
+  if (streamers[index].rankCount === rankCount) {
+    return; // 数值未变化，跳过写入
+  }
   streamers[index] = { ...streamers[index], rankCount };
   await StorageHelper.set('streamers', streamers);
   console.log(`[bili] updateRankCount 已写入 ${roomId} rankCount=${rankCount}`);
 }
 
-// === B站弹幕页面通道（降级方案） ===
-// 部分浏览器（如豆包）登录 B站后，SW 直连 WS 携带登录 Cookie 被 B站风控断开。
-// 检测到后切换为 content script 在 B站页面上下文建连（lib/bilibili-page-bridge.js），
+// === B站弹幕页面通道（SW 直连被风控时的降级后备） ===
+// SW 直连为主通道（认证参数与页面弹幕一致后实测可用，见 .pi/test-bili-comet.cjs）；
+// 若未来 B站风控收紧（本轮采样全败且快速断开），onFallback 切换为页面通道：
+// content script 在 live.bilibili.com 页面上下文建连（lib/bilibili-page-bridge.js），
 // 通过 chrome.runtime 消息回传高能榜在线数。
 const BRIDGE_TAB_URL = 'https://live.bilibili.com/?dyext=1'; // 桥接标签页标记 URL
-let biliPageChannelEnabled = false;
+let biliPageChannelEnabled = false; // 页面通道启用标记（持久化，SW 重启后仍生效）
 
-// SW 直连采样被风控（连续多轮快速断开）→ 降级到页面通道
+// SW 直连采样被风控（本轮全败且快速断开）→ 降级到页面通道
 async function handleBiliChannelFallback() {
   if (biliPageChannelEnabled || !(await isViewerFetchEnabled())) {
     return;
@@ -116,8 +153,8 @@ async function handleBiliChannelFallback() {
   biliPageChannelEnabled = true;
   await StorageHelper.set('biliPageChannelEnabled', true); // 持久化，SW 重启后仍走页面通道
   console.warn('[bili] SW 直连采样被风控，切换到页面通道');
-  // 停止 SW 直连采样，避免继续触发风控
-  bilibiliBarrageClient.sample([]);
+  // 停止 SW 直连采样，避免继续触发风控（destroy 只断开连接，不触发降级判定）
+  bilibiliBarrageClient.destroy();
   await ensureBridgeTab();
   try {
     await chrome.notifications.create('bili_bridge_fallback', {
@@ -132,24 +169,76 @@ async function handleBiliChannelFallback() {
   }
 }
 
+// 关闭桥接标签页（无 B站房间 / 关闭观众数开关时调用）
+async function closeBridgeTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+  for (const tab of tabs) {
+    if (tab.url && tab.url.includes('dyext=1')) {
+      chrome.tabs.remove(tab.id).catch(() => {});
+    }
+  }
+}
+
+// 向桥接标签页同步 B站房间列表（页面通道长连接模式的订阅源）
+// 桥接页加载时也会自行从 storage 读取，此消息覆盖注入晚于消息到达的竞态；
+// 桥接页未就绪（还在加载/刷新）时静默失败，等页面自行读取即可
+async function sendBiliSetRooms(roomIds) {
+  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+  for (const tab of tabs) {
+    if (tab.url && tab.url.includes('dyext=1')) {
+      chrome.tabs.sendMessage(tab.id, { type: 'BILI_SET_ROOMS', roomIds }).catch(() => {});
+    }
+  }
+}
+
+let bridgeEnsurePromise = null; // 并发去重：alarm 采样与设置变更可能同时触发创建
+
 // 确保桥接标签页存在（优先复用已打开的，否则自动创建，不抢焦点）
 async function ensureBridgeTab() {
+  if (bridgeEnsurePromise) {
+    return bridgeEnsurePromise; // 进行中的创建/检测共享同一次结果，避免重复弹出标签页
+  }
+  bridgeEnsurePromise = _ensureBridgeTab().finally(() => { bridgeEnsurePromise = null; });
+  return bridgeEnsurePromise;
+}
+
+async function _ensureBridgeTab() {
   const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
   const existing = tabs.find(t => t.url && t.url.includes('dyext=1'));
   if (existing) {
+    // 扩展重载后旧页面的 content script 会失效（chrome.runtime 断开），消息无人响应；
+    // ping 检测存活，无响应则刷新页面重新注入
+    try {
+      await chrome.tabs.sendMessage(existing.id, { type: 'BILI_PING' });
+    } catch (e) {
+      console.warn('[bili] 桥接页 content script 未响应, 刷新重新注入');
+      await chrome.tabs.reload(existing.id);
+    }
+    await dedupeBridgeTabs();
     return existing.id;
   }
   const tab = await chrome.tabs.create({ url: BRIDGE_TAB_URL, active: false });
+  await dedupeBridgeTabs();
   return tab.id;
 }
 
-// 桥接标签页被用户关闭后自动重开
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (!biliPageChannelEnabled) {
-    return;
+// 清理多余的桥接标签页：扩展重载瞬间新旧 SW 交替时，旧 SW 的创建请求可能已经发出，
+// 导致残留两个 dyext=1 页面（内存锁无法跨 SW 实例生效），统一保留第一个
+async function dedupeBridgeTabs() {
+  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+  const bridges = tabs.filter(t => t.url && t.url.includes('dyext=1'));
+  for (const extra of bridges.slice(1)) {
+    console.warn(`[bili] 发现多余桥接标签页 tabId=${extra.id}, 关闭`);
+    chrome.tabs.remove(extra.id).catch(() => {});
   }
-  setTimeout(() => {
-    if (biliPageChannelEnabled) {
+}
+
+// 桥接标签页被用户关闭后自动重开（页面通道启用且有 B站房间时）
+chrome.tabs.onRemoved.addListener((tabId) => {
+  setTimeout(async () => {
+    const rooms = (await StorageHelper.get('rooms')) || [];
+    const hasBili = rooms.some(r => r.platform === 'bilibili');
+    if (biliPageChannelEnabled && hasBili && (await isViewerFetchEnabled())) {
       ensureBridgeTab().catch(() => {});
     }
   }, 1000);
@@ -168,6 +257,12 @@ chrome.runtime.onInstalled.addListener(async () => {
       _firstRun: true
     });
   }
+
+  // 通道选择（页面桥接 vs SW 直连）统一由 syncBarrageRooms 按登录态/降级标记决策，
+  // 这里不再重置标记或关闭桥接页，避免与顶层 syncBarrageRooms() 竞态覆盖。
+  // （登录用户：ensureBridgeTab 会 ping 存活检测，重载后失效的桥接页自动刷新重注入）
+  await syncBarrageRooms();
+
   await createAlarm();
 });
 
@@ -205,16 +300,12 @@ async function sampleViewerCounts() {
   }
   if (bilibiliIds.length > 0) {
     if (biliPageChannelEnabled) {
-      // 页面通道：由桥接标签页在页面上下文采样，结果经 BILI_RANK_COUNT 回传
-      const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-      for (const tab of tabs) {
-        if (tab.url && tab.url.includes('dyext=1')) {
-          chrome.tabs.sendMessage(tab.id, { type: 'BILI_SAMPLE_ROOMS', roomIds: bilibiliIds }).catch(() => {
-            // content script 未就绪（页面加载中），下一轮再采样
-          });
-        }
-      }
+      // 页面通道（登录态主通道/降级后备）：桥接标签页在页面上下文保持长连接，
+      // 持续上报高能榜在线数（BILI_RANK_COUNT 回传）；这里仅同步最新房间列表
+      await ensureBridgeTab();
+      await sendBiliSetRooms(bilibiliIds);
     } else {
+      // SW 直连主通道（未登录）：每个房间一条短连，收到高能榜在线数即断开（认证参数与页面弹幕一致）
       bilibiliBarrageClient.sample(bilibiliIds);
     }
   }
