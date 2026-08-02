@@ -19,15 +19,23 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://live.bilibili.com/*"],
+      "js": ["lib/bilibili-barrage.js", "lib/bilibili-page-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "options_page": "options/options.html",
   "permissions": [
     "storage",
     "alarms",
-    "notifications"
+    "notifications",
+    "cookies"
   ],
   "host_permissions": [
     "https://www.douyu.com/*",
     "https://api.live.bilibili.com/*",
-    "https://api.bilibili.com/*"
+    "https://*.bilibili.com/*"
   ]
 }

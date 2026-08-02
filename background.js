@@ -14,8 +14,10 @@ const barrageClient = new BarrageClient({
 
 // === B站高能榜弹幕客户端 ===
 // 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次
+// 若 SW 直连被风控（如豆包+登录态），降级到页面通道（bilibili-page-bridge.js）
 const bilibiliBarrageClient = new BilibiliBarrageClient({
-  onRankCount: updateRankCount
+  onRankCount: updateRankCount,
+  onFallback: handleBiliChannelFallback
 });
 
 // Service Worker 每次唤醒时同步订阅列表
@@ -27,7 +29,17 @@ async function syncBarrageRooms() {
   const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
   barrageClient.setRooms(douyuIds);
   const bilibiliIds = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
-  bilibiliBarrageClient.setRooms(bilibiliIds);
+  // SW 重启后从 storage 恢复页面通道降级状态（避免反复重连→降级循环）
+  const pageEnabled = biliPageChannelEnabled
+    || (await StorageHelper.get('biliPageChannelEnabled')) === true;
+  if (pageEnabled) {
+    biliPageChannelEnabled = true;
+    bilibiliBarrageClient.setRooms([]); // 页面通道接管，SW 不直连
+    await notifyBridgeRooms();
+    await ensureBridgeTab();
+  } else {
+    bilibiliBarrageClient.setRooms(bilibiliIds);
+  }
 }
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
@@ -46,11 +58,83 @@ async function updateRankCount({ roomId, rankCount }) {
   const streamers = (await StorageHelper.get('streamers')) || [];
   const index = streamers.findIndex(s => s.platform === 'bilibili' && String(s.roomId) === String(roomId));
   if (index === -1) {
+    console.warn(`[bili] updateRankCount 未找到匹配 streamers 条目 roomId=${roomId} rankCount=${rankCount} streamers=${streamers.length}条`);
     return;
   }
   streamers[index] = { ...streamers[index], rankCount };
   await StorageHelper.set('streamers', streamers);
+  console.log(`[bili] updateRankCount 已写入 ${roomId} rankCount=${rankCount}`);
 }
+
+// === B站弹幕页面通道（降级方案） ===
+// 部分浏览器（如豆包）登录 B站后，SW 直连 WS 携带登录 Cookie 被 B站风控断开。
+// 检测到后切换为 content script 在 B站页面上下文建连（lib/bilibili-page-bridge.js），
+// 通过 chrome.runtime 消息回传高能榜在线数。
+const BRIDGE_TAB_URL = 'https://live.bilibili.com/?dyext=1'; // 桥接标签页标记 URL
+let biliPageChannelEnabled = false;
+
+// SW 直连被风控 → 降级到页面通道
+async function handleBiliChannelFallback(roomId) {
+  if (biliPageChannelEnabled) {
+    return;
+  }
+  biliPageChannelEnabled = true;
+  await StorageHelper.set('biliPageChannelEnabled', true); // 持久化，SW 重启后仍走页面通道
+  console.warn(`[bili] SW 直连被风控（roomId=${roomId}），切换到页面通道`);
+  // 停止 SW 直连，避免无限重连反复触发请求
+  bilibiliBarrageClient.setRooms([]);
+  await ensureBridgeTab();
+  await notifyBridgeRooms();
+  try {
+    await chrome.notifications.create('bili_bridge_fallback', {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: 'B站高能榜连接已切换通道',
+      message: '当前浏览器拦截了扩展直连，已自动打开一个后台 B站标签页作为桥接。请勿关闭该标签页。',
+      priority: 1
+    });
+  } catch (e) {
+    // 通知失败不影响功能
+  }
+}
+
+// 确保桥接标签页存在（优先复用已打开的，否则自动创建，不抢焦点）
+async function ensureBridgeTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+  const existing = tabs.find(t => t.url && t.url.includes('dyext=1'));
+  if (existing) {
+    return existing.id;
+  }
+  const tab = await chrome.tabs.create({ url: BRIDGE_TAB_URL, active: false });
+  return tab.id;
+}
+
+// 把当前 B站房间列表同步给桥接页（增删房间时调用）
+async function notifyBridgeRooms() {
+  const rooms = (await StorageHelper.get('rooms')) || [];
+  const ids = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
+  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+  for (const tab of tabs) {
+    if (!tab.url || !tab.url.includes('dyext=1')) {
+      continue;
+    }
+    chrome.tabs.sendMessage(tab.id, { type: 'BILI_SET_ROOMS', roomIds: ids }).catch(() => {
+      // content script 未就绪（页面加载中），稍后页面加载时会自行从 storage 同步
+    });
+  }
+}
+
+// 桥接标签页被用户关闭后自动重开
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!biliPageChannelEnabled) {
+    return;
+  }
+  setTimeout(() => {
+    if (biliPageChannelEnabled) {
+      ensureBridgeTab().catch(() => {});
+    }
+  }, 1000);
+});
 
 // === 初始化 ===
 chrome.runtime.onInstalled.addListener(async () => {
@@ -270,6 +354,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'REMOVE_ROOM':
       handleRemoveRoom(message.roomId, message.platform).then(sendResponse);
+      return true;
+
+    // 页面通道（content script）回传的高能榜在线数
+    case 'BILI_RANK_COUNT':
+      updateRankCount({ roomId: message.roomId, rankCount: message.rankCount })
+        .then(() => sendResponse({ ok: true }));
       return true;
 
     default:
