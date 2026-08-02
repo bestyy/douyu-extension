@@ -11,7 +11,7 @@ douyu-extensions/
 ├── lib/
 │   ├── douyu-api.js       # 斗鱼公开 API 封装（/betard/ endpoint）
 │   ├── bilibili-api.js    # Bilibili 公开 API 封装
-│   ├── douyu-barrage.js   # 斗鱼弹幕 WebSocket 客户端（贵宾数 oni 消息）
+│   ├── douyu-barrage.js   # 斗鱼弹幕 WS 采样客户端（贵宾数 oni 消息，每房间一条连接）
 │   └── storage.js         # chrome.storage.local 封装
 ├── options/
 │   ├── options.html       # 设置页：添加/删除房间、刷新间隔
@@ -37,12 +37,13 @@ douyu-extensions/
   - `batchFetchRoomInfo(roomIds)` — 批量并行查询
   - `resolveNickname(roomId)` — 解析主播名（添加房间时验证）
 - `lib/storage.js` - 存储工具，操作 `chrome.storage.local`，包含默认配置 `DEFAULT_STORAGE`
-- `lib/douyu-barrage.js` - 斗鱼弹幕 WebSocket 客户端（贵宾数推送）
+- `lib/douyu-barrage.js` - 斗鱼弹幕 WS 采样客户端（贵宾数推送）
   - 直连 `wss://danmuproxy.douyu.com:8501-8505/`，**无需 vk 签名**，随机 visitor 身份即可登录
-  - 每个斗鱼房间一条连接：`loginreq`（ver@=20220825/aver@=218101901）+ `joingroup`（gid@=1）→ 消息流
-  - 心跳 `type@=mrkl/` 每 45 秒；断线指数退避重连（2s 起，上限 60s），失败自动轮换端口
+  - 每条连接：`loginreq`（ver@=20220825/aver@=218101901）+ `joingroup`（gid@=1）→ 消息流
   - 贵宾数来自 `oni` 消息的 `vn` 字段，约每 6 秒推送一次 → 回调 `{ roomId, vipCount }`
   - 帧格式：`4B 小端长度 + 4B 小端长度 + 4B 小端类型(689) + UTF-8 body + \0`，长度 = body 字节数 + 9
+  - **采样模式**：每个房间一条连接（实测 danmuproxy 单连接多 joingroup 只响应第一个房间，见 `.pi/test-douyu-multiroom.cjs`），收到贵宾数或 20 秒超时后立即断开，平时零 WS 连接
+  - **未开播兜底**：未开播房间不推送 oni（实测 `betard` 的 `show_status !== 1`），超时后查询开播状态按贵宾数 0 上报，避免「漏采」误判；oni 无 `vn` 字段（未开通贵宾）同样按 0 上报
 - `options/options.js` - 设置页，通过 `chrome.runtime.sendMessage` 与 background 通信
 
 ## Storage Schema
@@ -52,7 +53,7 @@ rooms:          [{ roomId: string, nickname: string, platform: 'douyu'|'bilibili
 streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers, category, startTime, platform, vipCount? }]  — vipCount 为斗鱼贵宾数，来自弹幕 oni 推送，非 API 字段
 notifiedRooms:  [{ roomId: string, platform: string }]  — 已发送过通知的房间 ID
 lastRefresh:    timestamp
-settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean }
+settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean, fetchViewerCount: boolean }
 ```
 
 ## Non-Obvious Commands & Workflows
@@ -60,13 +61,17 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, o
 - 添加房间流程：options 页面发送 `ADD_ROOM` → `handleAddRoom` 调用 `resolveNickname`（验证房间存在并获取主播名）→ 成功后立即触发一次 `refreshRooms`
   - 自动兜底：如果所选平台解析失败，自动尝试另一个平台
 - 手动刷新：发送 `MANUAL_REFRESH` 消息触发一轮立即轮询
-- 设置变更：发送 `SETTINGS_UPDATED` 消息重建 alarm（更新刷新间隔）
+- 设置变更：发送 `SETTINGS_UPDATED` 消息重建 alarm（更新刷新间隔），并重新同步弹幕订阅（观众数开关即时生效）
 - 首次安装：`onInstalled` 初始化存储，标记 `_firstRun`，首次轮询时不发送通知
 - 刷新间隔：通过 `chrome.alarms` 实现，最小 60 秒
 - Per-room 通知开关：每个房间独立控制是否发送开播通知（`rooms[].notify`），新添加的房间默认 `notify: false`（不通知），用户需在设置页通过 checkbox 手动开启
-- 贵宾数数据流：danmuproxy WS → `douyu-barrage.js` 解析 oni → background 写 `streamers[].vipCount` → popup 卡片显示「X 贵宾」（仅斗鱼且 > 0 时显示）
-  - Service Worker 每次唤醒、ADD_ROOM/REMOVE_ROOM 后调用 `syncBarrageRooms()` 同步订阅；`refreshRooms` 合并时从 prevMap 透传 `vipCount`（API 不返回该字段）
-  - oni 每 6 秒推送天然保活 Service Worker；未开播房间可能无 oni 推送，此时不显示贵宾数
+- 贵宾数数据流：每 10 分钟采样一次（`chrome.alarms` 驱动 `sampleViewerCounts`）→ danmuproxy WS 短连 → `douyu-barrage.js` 解析 oni → background 写 `streamers[].vipCount` → popup 卡片显示「X 贵宾」（仅斗鱼且 > 0 时显示）
+  - **采样模式**：斗鱼与 B站均每房间一条连接（认证/订阅必须按房间建连），收到数据立即断开，全部完成或超时（均 20s）收尾，平时零 WS 连接，连接数仅在采样窗口内等于房间数
+  - `refreshRooms` 合并时从 prevMap 透传 `vipCount`（API 不返回该字段）；斗鱼未开播房间超时后查 `betard` 兜底上报 0，B站未开播房间保持旧值
+  - **B站 1006 风控的关键**：广播通道校验「握手 Cookie buvid3」与「认证包 buvid」必须一致（不一致即被 1006 断开）。`bilibili-barrage.js` 的 `resolveBuvid3()` 统一来源：优先复用浏览器已有 buvid3 Cookie，没有则生成 `infoc` 格式随机值写入 Cookie，认证包与握手 Cookie 恒为同一值（不要用 `crypto.randomUUID()` 写 Cookie——格式不符且与认证包不一致）
+  - B站 SW 直连被风控的检测：一轮采样无任何数据且出现 1006 快速断开 → `onFallback` **立即**降级到页面通道（不等下一轮）；桥接页同样由 `BILI_SAMPLE_ROOMS` 消息驱动采样，结果经 `BILI_RANK_COUNT` 回传
+  - ADD_ROOM/REMOVE_ROOM、设置变更（SETTINGS_UPDATED，如切换观众数开关）后立即采样一次，不用等下一个 10 分钟周期
+- 观众数开关：设置页 `fetchViewerCount`（默认 true）控制是否获取房间观众数。关闭时 `syncBarrageRooms` 停用 B站页面通道、关闭桥接标签页并清除 `streamers` 中的 `vipCount`/`rankCount`；设置变更（`SETTINGS_UPDATED`）会触发重新同步，开关即时生效
 
 ## Gotchas
 

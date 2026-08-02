@@ -20,30 +20,62 @@ const bilibiliBarrageClient = new BilibiliBarrageClient({
   onFallback: handleBiliChannelFallback
 });
 
-// Service Worker 每次唤醒时同步订阅列表
+// === 观众数采样控制 ===
+// 设置页开关 fetchViewerCount 控制是否获取观众数（斗鱼贵宾数/B站高能榜在线数）；
+// 采样模式：每 10 分钟由 chrome.alarms 驱动一次短连，拿到数据立即断开，
+// 平时不保持任何 WS 连接（连接数不再随房间数增长）
+const VIEWER_SAMPLE_INTERVAL = 10; // 观众数采样间隔（分钟），与 sampleViewerCounts alarm 周期一致
+
+// 读取观众数获取开关（settings.fetchViewerCount，默认开启）
+async function isViewerFetchEnabled() {
+  const settings = await StorageHelper.get('settings');
+  return settings?.fetchViewerCount !== false;
+}
+
+// 清除 streamers 中的观众数字段（关闭开关时调用，避免 popup 显示过期数据）
+async function stripViewerCounts() {
+  const streamers = (await StorageHelper.get('streamers')) || [];
+  if (!streamers.some(s => 'vipCount' in s || 'rankCount' in s)) {
+    return;
+  }
+  const cleaned = streamers.map(s => {
+    const { vipCount, rankCount, ...rest } = s;
+    return rest;
+  });
+  await StorageHelper.set('streamers', cleaned);
+}
+
+// Service Worker 每次唤醒时同步弹幕客户端状态（观众数开关 / B站页面通道）
 syncBarrageRooms();
 
-// 订阅所有斗鱼/B站房间的弹幕连接
 async function syncBarrageRooms() {
-  const rooms = (await StorageHelper.get('rooms')) || [];
-  const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
-  barrageClient.setRooms(douyuIds);
-  const bilibiliIds = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
-  // SW 重启后从 storage 恢复页面通道降级状态（避免反复重连→降级循环）
+  if (!(await isViewerFetchEnabled())) {
+    // 关闭观众数获取：停用页面通道，清除已存观众数，关闭桥接标签页
+    biliPageChannelEnabled = false;
+    await StorageHelper.set('biliPageChannelEnabled', false);
+    await stripViewerCounts();
+    const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+    for (const tab of tabs) {
+      if (tab.url && tab.url.includes('dyext=1')) {
+        chrome.tabs.remove(tab.id).catch(() => {});
+      }
+    }
+    return;
+  }
+  // 恢复页面通道降级状态（SW 重启后从 storage 恢复，避免反复直连→降级循环）
   const pageEnabled = biliPageChannelEnabled
     || (await StorageHelper.get('biliPageChannelEnabled')) === true;
   if (pageEnabled) {
     biliPageChannelEnabled = true;
-    bilibiliBarrageClient.setRooms([]); // 页面通道接管，SW 不直连
-    await notifyBridgeRooms();
     await ensureBridgeTab();
-  } else {
-    bilibiliBarrageClient.setRooms(bilibiliIds);
   }
 }
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
 async function updateVipCount({ roomId, vipCount }) {
+  if (!(await isViewerFetchEnabled())) {
+    return;
+  }
   const streamers = (await StorageHelper.get('streamers')) || [];
   const index = streamers.findIndex(s => s.platform === 'douyu' && String(s.roomId) === String(roomId));
   if (index === -1) {
@@ -55,6 +87,9 @@ async function updateVipCount({ roomId, vipCount }) {
 
 // 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）
 async function updateRankCount({ roomId, rankCount }) {
+  if (!(await isViewerFetchEnabled())) {
+    return;
+  }
   const streamers = (await StorageHelper.get('streamers')) || [];
   const index = streamers.findIndex(s => s.platform === 'bilibili' && String(s.roomId) === String(roomId));
   if (index === -1) {
@@ -73,18 +108,17 @@ async function updateRankCount({ roomId, rankCount }) {
 const BRIDGE_TAB_URL = 'https://live.bilibili.com/?dyext=1'; // 桥接标签页标记 URL
 let biliPageChannelEnabled = false;
 
-// SW 直连被风控 → 降级到页面通道
-async function handleBiliChannelFallback(roomId) {
-  if (biliPageChannelEnabled) {
+// SW 直连采样被风控（连续多轮快速断开）→ 降级到页面通道
+async function handleBiliChannelFallback() {
+  if (biliPageChannelEnabled || !(await isViewerFetchEnabled())) {
     return;
   }
   biliPageChannelEnabled = true;
   await StorageHelper.set('biliPageChannelEnabled', true); // 持久化，SW 重启后仍走页面通道
-  console.warn(`[bili] SW 直连被风控（roomId=${roomId}），切换到页面通道`);
-  // 停止 SW 直连，避免无限重连反复触发请求
-  bilibiliBarrageClient.setRooms([]);
+  console.warn('[bili] SW 直连采样被风控，切换到页面通道');
+  // 停止 SW 直连采样，避免继续触发风控
+  bilibiliBarrageClient.sample([]);
   await ensureBridgeTab();
-  await notifyBridgeRooms();
   try {
     await chrome.notifications.create('bili_bridge_fallback', {
       type: 'basic',
@@ -107,21 +141,6 @@ async function ensureBridgeTab() {
   }
   const tab = await chrome.tabs.create({ url: BRIDGE_TAB_URL, active: false });
   return tab.id;
-}
-
-// 把当前 B站房间列表同步给桥接页（增删房间时调用）
-async function notifyBridgeRooms() {
-  const rooms = (await StorageHelper.get('rooms')) || [];
-  const ids = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
-  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-  for (const tab of tabs) {
-    if (!tab.url || !tab.url.includes('dyext=1')) {
-      continue;
-    }
-    chrome.tabs.sendMessage(tab.id, { type: 'BILI_SET_ROOMS', roomIds: ids }).catch(() => {
-      // content script 未就绪（页面加载中），稍后页面加载时会自行从 storage 同步
-    });
-  }
 }
 
 // 桥接标签页被用户关闭后自动重开
@@ -158,13 +177,48 @@ async function createAlarm() {
   const interval = settings?.refreshInterval || 60;
   const minutes = Math.max(1, Math.floor(interval / 60));
   chrome.alarms.create('refreshRooms', { periodInMinutes: minutes });
+  // 观众数采样 alarm：10 分钟短连一次，平时不保持 WS 连接
+  chrome.alarms.create('sampleViewerCounts', { periodInMinutes: VIEWER_SAMPLE_INTERVAL });
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'refreshRooms') {
     await refreshRooms();
+  } else if (alarm.name === 'sampleViewerCounts') {
+    await sampleViewerCounts();
   }
 });
+
+// === 观众数定时采样 ===
+// 每 10 分钟短连一次：斗鱼单连接订阅全部房间，B站每房间一条连接；
+// 拿到数据立即断开，平时零 WS 连接（由 chrome.alarms 驱动，SW 休眠后自动恢复）
+async function sampleViewerCounts() {
+  if (!(await isViewerFetchEnabled())) {
+    return;
+  }
+  const rooms = (await StorageHelper.get('rooms')) || [];
+  const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
+  const bilibiliIds = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
+
+  if (douyuIds.length > 0) {
+    barrageClient.sample(douyuIds);
+  }
+  if (bilibiliIds.length > 0) {
+    if (biliPageChannelEnabled) {
+      // 页面通道：由桥接标签页在页面上下文采样，结果经 BILI_RANK_COUNT 回传
+      const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
+      for (const tab of tabs) {
+        if (tab.url && tab.url.includes('dyext=1')) {
+          chrome.tabs.sendMessage(tab.id, { type: 'BILI_SAMPLE_ROOMS', roomIds: bilibiliIds }).catch(() => {
+            // content script 未就绪（页面加载中），下一轮再采样
+          });
+        }
+      }
+    } else {
+      bilibiliBarrageClient.sample(bilibiliIds);
+    }
+  }
+}
 
 // === 核心轮询逻辑 ===
 async function refreshRooms() {
@@ -345,7 +399,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'SETTINGS_UPDATED':
-      createAlarm().then(() => sendResponse({ ok: true }));
+      // 重建轮询 alarm，重新同步弹幕客户端状态，并立即采样一次（开关即时生效）
+      createAlarm().then(() => syncBarrageRooms()).then(() => sampleViewerCounts())
+        .then(() => sendResponse({ ok: true }));
       return true;
 
     case 'ADD_ROOM':
@@ -412,6 +468,8 @@ async function handleAddRoom(rawRoomId, platform) {
 
   await refreshRooms();
   await syncBarrageRooms();
+  // 立即采样一次观众数，不用等下一个 10 分钟周期
+  await sampleViewerCounts();
 
   return { ok: true, nickname: resolveResult.nickname };
 }
@@ -432,6 +490,8 @@ async function handleRemoveRoom(roomId, platform) {
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
 
   await syncBarrageRooms();
+  // 移除房间后立即采样，刷新剩余房间的观众数
+  await sampleViewerCounts();
 
   return { ok: true };
 }

@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const addStatus = document.getElementById('addStatus');
   const refreshInterval = document.getElementById('refreshInterval');
   const notificationsEnabled = document.getElementById('notificationsEnabled');
+  const fetchViewerCount = document.getElementById('fetchViewerCount');
 
   // 加载现有设置
   if (data.settings?.refreshInterval) {
@@ -18,6 +19,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (data.settings?.notificationsEnabled !== undefined) {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
+  }
+  if (data.settings?.fetchViewerCount !== undefined) {
+    fetchViewerCount.checked = data.settings.fetchViewerCount;
   }
 
   // Migration check - old cookie config detected
@@ -147,10 +151,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
     const interval = Math.max(60, parseInt(refreshInterval.value, 10) || 60);
     refreshInterval.value = interval;
+    // 合并现有 settings（保留 openInCurrentTab 等字段）
+    const data = await chrome.storage.local.get('settings');
     await chrome.storage.local.set({
       settings: {
+        ...(data.settings || {}),
         refreshInterval: interval,
-        notificationsEnabled: notificationsEnabled.checked
+        notificationsEnabled: notificationsEnabled.checked,
+        fetchViewerCount: fetchViewerCount.checked
       }
     });
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
@@ -162,6 +170,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settings = data.settings || {};
     settings.notificationsEnabled = notificationsEnabled.checked;
     await chrome.storage.local.set({ settings });
+  });
+
+  // 观众数开关：即时生效（通知 background 同步弹幕客户端连接）
+  fetchViewerCount.addEventListener('change', async () => {
+    const data = await chrome.storage.local.get('settings');
+    const settings = data.settings || {};
+    settings.fetchViewerCount = fetchViewerCount.checked;
+    await chrome.storage.local.set({ settings });
+    chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
   });
 
   // 初始渲染
