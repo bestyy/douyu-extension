@@ -14,10 +14,10 @@ const barrageClient = new BarrageClient({
 
 // === B站高能榜弹幕客户端 ===
 // 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次。
-// SW 直连为主通道：认证参数与直播间页面弹幕连接逐字对齐（comet 2245 通道 +
-// support_ack/queue_uid/scene 字段 + spi 签发配对 buvid），实测 SW 环境
-// （chrome-extension Origin、无 Cookie 握手）同样可用（见 .pi/test-bili-comet.cjs）。
-// 若未来被风控（本轮全败且快速断开），onFallback 降级到页面通道。
+// 通道由 syncBarrageRooms 按登录态决策：未登录走 SW 直连（认证参数与直播间页面
+// 弹幕连接逐字对齐，见 .pi/test-bili-comet.cjs），登录态走页面桥接（SW 直连握手
+// 必被 1006 风控）；两通道均为 10 分钟采样节奏，拿到数据即断开。
+// 若未来 SW 直连被风控（本轮全败且快速断开），onFallback 降级到页面通道。
 const bilibiliBarrageClient = new BilibiliBarrageClient({
   onRankCount: updateRankCount,
   onFallback: handleBiliChannelFallback
@@ -87,6 +87,8 @@ async function syncBarrageRooms() {
   // 有 B站房间：通道选择 —— 登录态（SESSDATA）下 SW 直连握手必被 1006 风控，
   // 必须走页面桥接；未登录时 SW 直连可用。持久化的降级标记（未登录时被风控
   // 降级过）在 SW 重启后继续生效，与登录检测共同决定通道。
+  // 两种通道均为采样节奏（每 10 分钟一次）：页面通道每次采样临时打开桥接标签页，
+  // 拿到数据即关闭，不保留常驻页面与长连接（见 sampleViewerCounts）。
   const useBridge = (await isBiliLoggedIn()) ||
     (await StorageHelper.get('biliPageChannelEnabled')) === true;
   if (useBridge !== biliPageChannelEnabled) {
@@ -94,11 +96,8 @@ async function syncBarrageRooms() {
     await StorageHelper.set('biliPageChannelEnabled', useBridge);
     console.log(`[bili] 通道切换为 ${useBridge ? '页面桥接' : 'SW 直连'}`);
   }
-  if (useBridge) {
-    await ensureBridgeTab();
-    // 同步最新房间列表给桥接页（页面通道为长连接模式，持续上报高能榜在线数）
-    await sendBiliSetRooms(rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId)));
-  } else {
+  if (!useBridge) {
+    // 未启用页面通道：清理可能残留的桥接标签页（旧版常驻页面/采样异常遗留）
     await closeBridgeTab();
   }
 }
@@ -153,15 +152,15 @@ async function handleBiliChannelFallback() {
   biliPageChannelEnabled = true;
   await StorageHelper.set('biliPageChannelEnabled', true); // 持久化，SW 重启后仍走页面通道
   console.warn('[bili] SW 直连采样被风控，切换到页面通道');
-  // 停止 SW 直连采样，避免继续触发风控（destroy 只断开连接，不触发降级判定）
+  // 停止 SW 直连采样，避免继续触发风控（destroy 只断开连接，不触发降级判定）；
+  // 桥接标签页不在此常驻，下一次 sampleViewerCounts 采样时临时打开
   bilibiliBarrageClient.destroy();
-  await ensureBridgeTab();
   try {
     await chrome.notifications.create('bili_bridge_fallback', {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
       title: 'B站高能榜连接已切换通道',
-      message: '当前浏览器拦截了扩展直连，已自动打开一个后台 B站标签页作为桥接。请勿关闭该标签页。',
+      message: '当前浏览器拦截了扩展直连，已切换为页面通道。每次采样时会自动临时打开一个 B站标签页，获取后自动关闭。',
       priority: 1
     });
   } catch (e) {
@@ -169,7 +168,7 @@ async function handleBiliChannelFallback() {
   }
 }
 
-// 关闭桥接标签页（无 B站房间 / 关闭观众数开关时调用）
+// 关闭桥接标签页（无 B站房间 / 关闭观众数开关 / 采样完成后调用）
 async function closeBridgeTab() {
   const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
   for (const tab of tabs) {
@@ -179,16 +178,17 @@ async function closeBridgeTab() {
   }
 }
 
-// 向桥接标签页同步 B站房间列表（页面通道长连接模式的订阅源）
-// 桥接页加载时也会自行从 storage 读取，此消息覆盖注入晚于消息到达的竞态；
-// 桥接页未就绪（还在加载/刷新）时静默失败，等页面自行读取即可
-async function sendBiliSetRooms(roomIds) {
-  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-  for (const tab of tabs) {
-    if (tab.url && tab.url.includes('dyext=1')) {
-      chrome.tabs.sendMessage(tab.id, { type: 'BILI_SET_ROOMS', roomIds }).catch(() => {});
+// 等待桥接页 content script 就绪（新建/刷新后注入需要时间），返回是否就绪
+async function waitBridgeReady(tabId, attempts = 15) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'BILI_PING' });
+      return true;
+    } catch (e) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
+  return false;
 }
 
 let bridgeEnsurePromise = null; // 并发去重：alarm 采样与设置变更可能同时触发创建
@@ -233,17 +233,9 @@ async function dedupeBridgeTabs() {
   }
 }
 
-// 桥接标签页被用户关闭后自动重开（页面通道启用且有 B站房间时）
-chrome.tabs.onRemoved.addListener((tabId) => {
-  setTimeout(async () => {
-    const rooms = (await StorageHelper.get('rooms')) || [];
-    const hasBili = rooms.some(r => r.platform === 'bilibili');
-    if (biliPageChannelEnabled && hasBili && (await isViewerFetchEnabled())) {
-      ensureBridgeTab().catch(() => {});
-    }
-  }, 1000);
-});
-
+// 桥接标签页只在采样期间存在（临时打开 → 采样完成/超时后由 SW 关闭），
+// 不需要「用户关闭后自动重开」的兜底逻辑（常驻模式遗留，临时模式下会导致
+// SW 主动关页后被重新打开，页面残留）。
 // === 初始化 ===
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await StorageHelper.getAll();
@@ -286,7 +278,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // === 观众数定时采样 ===
 // 每 10 分钟短连一次：斗鱼单连接订阅全部房间，B站每房间一条连接；
-// 拿到数据立即断开，平时零 WS 连接（由 chrome.alarms 驱动，SW 休眠后自动恢复）
+// 拿到数据立即断开，平时零 WS 连接（由 chrome.alarms 驱动，SW 休眠后自动恢复）。
+// B站登录态（SESSDATA）下 SW 直连握手必被 1006 风控，改为页面通道：临时打开
+// 桥接标签页，在页面上下文建立长连接（登录态下短连同样被风控），拿到高能榜
+// 在线数即断开并关闭页面，节奏与斗鱼一致。
 async function sampleViewerCounts() {
   if (!(await isViewerFetchEnabled())) {
     return;
@@ -300,14 +295,33 @@ async function sampleViewerCounts() {
   }
   if (bilibiliIds.length > 0) {
     if (biliPageChannelEnabled) {
-      // 页面通道（登录态主通道/降级后备）：桥接标签页在页面上下文保持长连接，
-      // 持续上报高能榜在线数（BILI_RANK_COUNT 回传）；这里仅同步最新房间列表
-      await ensureBridgeTab();
-      await sendBiliSetRooms(bilibiliIds);
+      // 页面通道（登录态主通道/降级后备）：临时开页 → 长连接采样 → 桥接页发
+      // BILI_SAMPLE_DONE 后由 SW 关闭页面（不在此长时间等待，消息事件可靠唤醒
+      // 休眠中的 SW 完成关页，避免等待期间 SW 空闲被终止）
+      await startBiliBridgeSample(bilibiliIds);
     } else {
       // SW 直连主通道（未登录）：每个房间一条短连，收到高能榜在线数即断开（认证参数与页面弹幕一致）
       bilibiliBarrageClient.sample(bilibiliIds);
     }
+  }
+}
+
+// 页面通道采样：打开（或复用）桥接标签页并驱动一轮采样。
+// 采样完成/超时由桥接页发 BILI_SAMPLE_DONE，SW 收到后关闭页面；不在这里
+// await 完成信号（最长 60 秒的等待会让 SW 空闲被终止，而消息事件可靠唤醒）。
+async function startBiliBridgeSample(roomIds) {
+  const tabId = await ensureBridgeTab();
+  const ready = await waitBridgeReady(tabId);
+  if (!ready) {
+    console.warn('[bili] 桥接页长时间未就绪, 本轮跳过');
+    await closeBridgeTab();
+    return;
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'BILI_SAMPLE_ROOMS', roomIds });
+  } catch (e) {
+    console.warn('[bili] 驱动桥接页采样失败, 本轮跳过');
+    await closeBridgeTab();
   }
 }
 
@@ -507,6 +521,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'BILI_RANK_COUNT':
       updateRankCount({ roomId: message.roomId, rankCount: message.rankCount })
         .then(() => sendResponse({ ok: true }));
+      return true;
+
+    // 桥接页本轮采样完成/超时 → 关闭桥接标签页（消息事件可靠唤醒休眠中的 SW，
+    // 避免采样流程在 SW 侧长时间等待导致空闲被终止）
+    case 'BILI_SAMPLE_DONE':
+      closeBridgeTab().catch(() => {});
+      sendResponse({ ok: true });
       return true;
 
     default:
