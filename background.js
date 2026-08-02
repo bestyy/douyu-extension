@@ -4,6 +4,7 @@ importScripts('lib/storage.js');
 importScripts('lib/douyu-api.js');
 importScripts('lib/bilibili-api.js');
 importScripts('lib/douyu-barrage.js');
+importScripts('lib/bilibili-barrage.js');
 
 // === 贵宾数弹幕客户端 ===
 // 通过 danmuproxy WebSocket 订阅 oni 消息（贵宾数），约每 6 秒推送一次
@@ -11,14 +12,22 @@ const barrageClient = new BarrageClient({
   onVipCount: updateVipCount
 });
 
+// === B站高能榜弹幕客户端 ===
+// 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次
+const bilibiliBarrageClient = new BilibiliBarrageClient({
+  onRankCount: updateRankCount
+});
+
 // Service Worker 每次唤醒时同步订阅列表
 syncBarrageRooms();
 
-// 订阅所有斗鱼房间的弹幕连接
+// 订阅所有斗鱼/B站房间的弹幕连接
 async function syncBarrageRooms() {
   const rooms = (await StorageHelper.get('rooms')) || [];
   const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
   barrageClient.setRooms(douyuIds);
+  const bilibiliIds = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
+  bilibiliBarrageClient.setRooms(bilibiliIds);
 }
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
@@ -29,6 +38,17 @@ async function updateVipCount({ roomId, vipCount }) {
     return;
   }
   streamers[index] = { ...streamers[index], vipCount };
+  await StorageHelper.set('streamers', streamers);
+}
+
+// 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）
+async function updateRankCount({ roomId, rankCount }) {
+  const streamers = (await StorageHelper.get('streamers')) || [];
+  const index = streamers.findIndex(s => s.platform === 'bilibili' && String(s.roomId) === String(roomId));
+  if (index === -1) {
+    return;
+  }
+  streamers[index] = { ...streamers[index], rankCount };
   await StorageHelper.set('streamers', streamers);
 }
 
@@ -113,9 +133,12 @@ async function refreshRooms() {
     }
     // 传递 per-room 通知标记
     item.notify = room.notify === true;
-    // 透传弹幕推送的贵宾数（API 不返回该字段，避免被轮询覆盖）
+    // 透传弹幕推送的贵宾数/高能榜在线数（API 不返回该字段，避免被轮询覆盖）
     if (prevMap[key] && typeof prevMap[key].vipCount === 'number') {
       item.vipCount = prevMap[key].vipCount;
+    }
+    if (prevMap[key] && typeof prevMap[key].rankCount === 'number') {
+      item.rankCount = prevMap[key].rankCount;
     }
     mergedData.push(item);
   }
@@ -147,6 +170,14 @@ async function refreshRooms() {
   }
 }
 
+// 数字格式化：>= 1 万显示 x.x万，否则原样（与 popup 保持一致）
+function formatNumber(num) {
+  if (num >= 10000) {
+    return (num / 10000).toFixed(1) + '万';
+  }
+  return String(num);
+}
+
 // === 新开播通知 ===
 async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
   const rawNotified = (await StorageHelper.get('notifiedRooms')) || [];
@@ -164,13 +195,21 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
 
     if (isNewlyLive && !alreadyNotified) {
       const platformPrefix = streamer.platform === 'bilibili' ? '[B站]' : '[斗鱼]';
+      // 统计文案按平台区分：斗鱼显示贵宾数（弹幕推送），B站显示高能榜在线数（弹幕推送）
+      const statText = streamer.platform === 'bilibili'
+        ? (typeof streamer.rankCount === 'number' && streamer.rankCount > 0
+            ? `${formatNumber(streamer.rankCount)} 高能榜`
+            : '')
+        : (typeof streamer.vipCount === 'number' && streamer.vipCount > 0
+            ? `${formatNumber(streamer.vipCount)} 贵宾`
+            : '');
       try {
         await chrome.notifications.create(compositeKey, {
           type: 'basic',
           iconUrl: 'icons/icon128.png',
           title: `${platformPrefix} ${streamer.nickname} 开播了！`,
           message: streamer.title || '正在直播',
-          contextMessage: `${streamer.category} · ${streamer.viewers} 人观看`,
+          contextMessage: [streamer.category, statText].filter(Boolean).join(' · '),
           buttons: [{ title: '进入直播间' }],
           priority: 2
         });
