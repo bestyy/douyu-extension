@@ -11,6 +11,7 @@ douyu-extensions/
 ├── lib/
 │   ├── douyu-api.js       # 斗鱼公开 API 封装（/betard/ endpoint）
 │   ├── bilibili-api.js    # Bilibili 公开 API 封装
+│   ├── douyu-barrage.js   # 斗鱼弹幕 WebSocket 客户端（贵宾数 oni 消息）
 │   └── storage.js         # chrome.storage.local 封装
 ├── options/
 │   ├── options.html       # 设置页：添加/删除房间、刷新间隔
@@ -36,13 +37,19 @@ douyu-extensions/
   - `batchFetchRoomInfo(roomIds)` — 批量并行查询
   - `resolveNickname(roomId)` — 解析主播名（添加房间时验证）
 - `lib/storage.js` - 存储工具，操作 `chrome.storage.local`，包含默认配置 `DEFAULT_STORAGE`
+- `lib/douyu-barrage.js` - 斗鱼弹幕 WebSocket 客户端（贵宾数推送）
+  - 直连 `wss://danmuproxy.douyu.com:8501-8505/`，**无需 vk 签名**，随机 visitor 身份即可登录
+  - 每个斗鱼房间一条连接：`loginreq`（ver@=20220825/aver@=218101901）+ `joingroup`（gid@=1）→ 消息流
+  - 心跳 `type@=mrkl/` 每 45 秒；断线指数退避重连（2s 起，上限 60s），失败自动轮换端口
+  - 贵宾数来自 `oni` 消息的 `vn` 字段，约每 6 秒推送一次 → 回调 `{ roomId, vipCount }`
+  - 帧格式：`4B 小端长度 + 4B 小端长度 + 4B 小端类型(689) + UTF-8 body + \0`，长度 = body 字节数 + 9
 - `options/options.js` - 设置页，通过 `chrome.runtime.sendMessage` 与 background 通信
 
 ## Storage Schema
 
 ```
 rooms:          [{ roomId: string, nickname: string, platform: 'douyu'|'bilibili', notify?: boolean }]  — 已添加的房间列表；notify 控制单房间通知开关，默认 false
-streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers, category, startTime, platform }]
+streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers, category, startTime, platform, vipCount? }]  — vipCount 为斗鱼贵宾数，来自弹幕 oni 推送，非 API 字段
 notifiedRooms:  [{ roomId: string, platform: string }]  — 已发送过通知的房间 ID
 lastRefresh:    timestamp
 settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean }
@@ -57,6 +64,9 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, o
 - 首次安装：`onInstalled` 初始化存储，标记 `_firstRun`，首次轮询时不发送通知
 - 刷新间隔：通过 `chrome.alarms` 实现，最小 60 秒
 - Per-room 通知开关：每个房间独立控制是否发送开播通知（`rooms[].notify`），新添加的房间默认 `notify: false`（不通知），用户需在设置页通过 checkbox 手动开启
+- 贵宾数数据流：danmuproxy WS → `douyu-barrage.js` 解析 oni → background 写 `streamers[].vipCount` → popup 卡片显示「X 贵宾」（仅斗鱼且 > 0 时显示）
+  - Service Worker 每次唤醒、ADD_ROOM/REMOVE_ROOM 后调用 `syncBarrageRooms()` 同步订阅；`refreshRooms` 合并时从 prevMap 透传 `vipCount`（API 不返回该字段）
+  - oni 每 6 秒推送天然保活 Service Worker；未开播房间可能无 oni 推送，此时不显示贵宾数
 
 ## Gotchas
 

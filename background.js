@@ -3,6 +3,34 @@
 importScripts('lib/storage.js');
 importScripts('lib/douyu-api.js');
 importScripts('lib/bilibili-api.js');
+importScripts('lib/douyu-barrage.js');
+
+// === 贵宾数弹幕客户端 ===
+// 通过 danmuproxy WebSocket 订阅 oni 消息（贵宾数），约每 6 秒推送一次
+const barrageClient = new BarrageClient({
+  onVipCount: updateVipCount
+});
+
+// Service Worker 每次唤醒时同步订阅列表
+syncBarrageRooms();
+
+// 订阅所有斗鱼房间的弹幕连接
+async function syncBarrageRooms() {
+  const rooms = (await StorageHelper.get('rooms')) || [];
+  const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
+  barrageClient.setRooms(douyuIds);
+}
+
+// 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
+async function updateVipCount({ roomId, vipCount }) {
+  const streamers = (await StorageHelper.get('streamers')) || [];
+  const index = streamers.findIndex(s => s.platform === 'douyu' && String(s.roomId) === String(roomId));
+  if (index === -1) {
+    return;
+  }
+  streamers[index] = { ...streamers[index], vipCount };
+  await StorageHelper.set('streamers', streamers);
+}
 
 // === 初始化 ===
 chrome.runtime.onInstalled.addListener(async () => {
@@ -85,6 +113,10 @@ async function refreshRooms() {
     }
     // 传递 per-room 通知标记
     item.notify = room.notify === true;
+    // 透传弹幕推送的贵宾数（API 不返回该字段，避免被轮询覆盖）
+    if (prevMap[key] && typeof prevMap[key].vipCount === 'number') {
+      item.vipCount = prevMap[key].vipCount;
+    }
     mergedData.push(item);
   }
 
@@ -250,6 +282,7 @@ async function handleAddRoom(rawRoomId, platform) {
   }
 
   await refreshRooms();
+  await syncBarrageRooms();
 
   return { ok: true, nickname: resolveResult.nickname };
 }
@@ -268,6 +301,8 @@ async function handleRemoveRoom(roomId, platform) {
   // Update badge
   const onlineCount = streamers.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
+
+  await syncBarrageRooms();
 
   return { ok: true };
 }

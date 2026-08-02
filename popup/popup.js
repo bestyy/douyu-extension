@@ -116,12 +116,16 @@ function renderStreamerList(container, streamers) {
     const platformTag = s.platform === 'bilibili'
       ? '<span class="platform-tag bilibili">B站</span>'
       : '<span class="platform-tag douyu">斗鱼</span>';
+    // 贵宾数来自弹幕推送（oni 消息），仅斗鱼且 > 0 时显示
+    const vipText = s.platform === 'douyu' && typeof s.vipCount === 'number' && s.vipCount > 0
+      ? ` · ${formatNumber(s.vipCount)} 贵宾`
+      : '';
     infoDiv.innerHTML = `
       <div class="streamer-name">${platformTag}${escapeHtml(s.nickname)}</div>
       <div class="streamer-title">${escapeHtml(s.title || '正在直播')}</div>
       <div class="streamer-meta">
         <span class="live-dot"></span>
-        ${escapeHtml(s.category)} · ${formatNumber(s.viewers)} 人
+        ${escapeHtml(s.category)} · ${formatNumber(s.viewers)} 人${vipText}
       </div>
     `;
 
