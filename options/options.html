@@ -8,51 +8,65 @@
 </head>
 <body>
   <div class="container">
-    <h1>⚙️ 斗鱼直播通知 设置</h1>
+    <header class="page-head">
+      <div class="brand">
+        <h1>斗鱼直播通知</h1>
+        <p class="subtitle">监控斗鱼与 B 站直播间 · 开播即刻提醒</p>
+      </div>
+      <div class="head-meter" id="headMeter" data-lit="0" aria-hidden="true">
+        <span class="meter-bar"></span>
+        <span class="meter-bar"></span>
+        <span class="meter-bar"></span>
+        <span class="meter-bar"></span>
+      </div>
+    </header>
 
+    <h2 class="group-title">房间号管理</h2>
     <section class="card">
-      <h2>📺 房间号管理</h2>
-      <p class="hint">添加要监控的直播间房间号</p>
       <div class="input-row">
         <select id="roomPlatform">
           <option value="douyu">斗鱼</option>
           <option value="bilibili">B站</option>
         </select>
-        <input type="text" id="roomIdInput" placeholder="输入房间号（如 12345）" autocomplete="off">
-        <button id="addRoomBtn" class="btn primary">➕ 添加</button>
+        <input type="text" id="roomIdInput" placeholder="输入房间号，如 12345" autocomplete="off">
+        <button id="addRoomBtn" class="btn primary">添加</button>
       </div>
       <div id="addStatus" class="status hidden"></div>
       <div id="roomList" class="room-list"></div>
       <div id="emptyRooms" class="empty-hint">尚未添加房间，请输入房间号并点击添加</div>
-      <button id="refreshStatusBtn" class="btn" style="margin-top:12px">🔄 刷新全部状态</button>
+      <div class="cell-divider"></div>
+      <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
     </section>
+    <p class="group-hint">添加要监控的直播间房间号</p>
 
+    <h2 class="group-title">刷新设置</h2>
     <section class="card">
-      <h2>⏱️ 刷新设置</h2>
       <div class="setting-row">
-        <label for="refreshInterval">轮询间隔（秒，最小 60）：</label>
+        <label for="refreshInterval">轮询间隔</label>
         <input type="number" id="refreshInterval" min="60" value="60" step="30">
+        <span class="unit">秒（最小 60）</span>
       </div>
-      <button id="saveSettingsBtn" class="btn primary">💾 保存设置</button>
+      <div class="cell-divider"></div>
+      <button id="saveSettingsBtn" class="cell-btn">保存设置</button>
       <div id="settingsStatus" class="status hidden"></div>
     </section>
 
+    <h2 class="group-title">通知设置</h2>
     <section class="card">
-      <h2>🔔 通知设置</h2>
       <label class="toggle-row">
         <input type="checkbox" id="notificationsEnabled" checked>
         <span>新开播时发送桌面通知</span>
       </label>
     </section>
 
+    <h2 class="group-title">观众数设置</h2>
     <section class="card">
-      <h2>👥 观众数设置</h2>
-      <p class="hint">斗鱼显示贵宾数，B站显示高能榜在线数（每 10 分钟更新一次）</p>
       <label class="toggle-row">
         <input type="checkbox" id="fetchViewerCount" checked>
         <span>获取房间观众数</span>
       </label>
     </section>
+    <p class="group-hint">斗鱼显示贵宾数，B站显示高能榜在线数（每 10 分钟更新一次）</p>
   </div>
 
   <script src="options.js"></script>

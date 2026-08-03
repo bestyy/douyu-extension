@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Migration check - old cookie config detected
   if (data.cookie && data.cookie.value && (!data.rooms || data.rooms.length === 0)) {
-    showStatus(addStatus, '\u{1F4A1} 已检测到旧版配置，请添加您要监控的房间号', 'info');
+    showStatus(addStatus, '已检测到旧版配置，请添加您要监控的房间号', 'info');
   }
 
   // 渲染房间列表
@@ -34,6 +34,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const { rooms = [], streamers = [] } = await chrome.storage.local.get(['rooms', 'streamers']);
     const onlineMap = {};
     streamers.forEach(s => { onlineMap[`${s.platform}_${s.roomId}`] = s.online; });
+
+    // 头部信号条：按在线房间数（1/3/6/10 档）点亮
+    const onlineCount = streamers.filter(s => s.online).length;
+    document.getElementById('headMeter').dataset.lit =
+      onlineCount >= 10 ? '4' : onlineCount >= 6 ? '3' : onlineCount >= 3 ? '2' : onlineCount >= 1 ? '1' : '0';
 
     if (rooms.length === 0) {
       roomList.innerHTML = '';
@@ -44,13 +49,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     roomList.innerHTML = rooms.map(r => {
       const onlineStatus = onlineMap[`${r.platform}_${r.roomId}`];
-      let statusIcon;
+      let statusCls;
       if (onlineStatus === true) {
-        statusIcon = '🟢';
+        statusCls = 'online';
       } else if (onlineStatus === false) {
-        statusIcon = '🔴';
+        statusCls = 'offline';
       } else {
-        statusIcon = '🟣';
+        statusCls = 'unknown';
       }
       const platformLabel = r.platform === 'bilibili'
         ? '<span class="platform-tag bilibili">B站</span>'
@@ -60,7 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
           <input type="checkbox" class="room-notify-cb" title="开播通知" ${checkedAttr}>
           <span class="drag-handle" draggable="false">⠿</span>
-          <span class="room-status">${statusIcon}</span>
+          <span class="status-dot ${statusCls}"></span>
           ${platformLabel}
           <span class="room-id">${r.roomId}</span>
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
@@ -118,17 +123,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    showStatus(addStatus, '⏳ 正在解析房间号...', 'info');
+    showStatus(addStatus, '正在解析房间号…', 'info');
     addRoomBtn.disabled = true;
 
     chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId, platform }, (response) => {
       addRoomBtn.disabled = false;
       if (response?.ok) {
         roomIdInput.value = '';
-        showStatus(addStatus, `✅ 已添加：${response.nickname}`, 'success');
+        showStatus(addStatus, `已添加：${response.nickname}`, 'success');
         renderRoomList();
       } else {
-        showStatus(addStatus, `❌ ${response?.error || '添加失败'}`, 'error');
+        showStatus(addStatus, `${response?.error || '添加失败'}`, 'error');
       }
     });
   }
@@ -142,7 +147,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshStatusBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'MANUAL_REFRESH' }, () => {
       renderRoomList();
-      showStatus(addStatus, '🔄 状态已刷新', 'success');
+      showStatus(addStatus, '状态已刷新', 'success');
       setTimeout(() => addStatus.classList.add('hidden'), 2000);
     });
   });
@@ -162,7 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
-    showStatus(document.getElementById('settingsStatus'), '✅ 设置已保存', 'success');
+    showStatus(document.getElementById('settingsStatus'), '设置已保存', 'success');
   });
 
   notificationsEnabled.addEventListener('change', async () => {

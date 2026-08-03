@@ -57,6 +57,7 @@ async function loadData() {
         document.getElementById('noRoomSub').innerHTML = 
           '已升级到新版本！旧版 Cookie 配置已不再可用。<br>请前往 <a href="#" id="openOptions">设置页</a> 添加房间号';
       }
+      updateMeter(0);
       document.getElementById('noRoom').classList.remove('hidden');
       return;
     }
@@ -65,20 +66,29 @@ async function loadData() {
     const onlineStreamers = streamers.filter(s => s.online);
 
     if (onlineStreamers.length === 0) {
+      updateMeter(0);
       document.getElementById('emptyState').classList.remove('hidden');
       document.getElementById('onlineCount').textContent = '0';
       return;
     }
 
     // 渲染列表
+    updateMeter(onlineStreamers.length);
     document.getElementById('onlineCount').textContent = String(onlineStreamers.length);
     renderStreamerList(document.getElementById('streamerList'), onlineStreamers);
     document.getElementById('streamerList').classList.remove('hidden');
 
   } catch (err) {
+    updateMeter(0);
     document.getElementById('loading').classList.add('hidden');
     document.getElementById('errorState').classList.remove('hidden');
   }
+}
+
+// 信号指示条：按在线人数点亮 1/3/6/10 档
+function updateMeter(count) {
+  const el = document.getElementById('monitor');
+  el.dataset.lit = count >= 10 ? '4' : count >= 6 ? '3' : count >= 3 ? '2' : count >= 1 ? '1' : '0';
 }
 
 function renderStreamerList(container, streamers) {
@@ -118,8 +128,8 @@ function renderStreamerList(container, streamers) {
       : '<span class="platform-tag douyu">斗鱼</span>';
     // 平台统计：斗鱼显示贵宾数（弹幕推送 oni 消息），B站显示高能榜在线数（弹幕推送 ONLINE_RANK_COUNT），> 0 时显示
     const statText = s.platform === 'douyu'
-      ? (typeof s.vipCount === 'number' && s.vipCount > 0 ? ` · ${formatNumber(s.vipCount)} 贵宾` : '')
-      : (typeof s.rankCount === 'number' && s.rankCount > 0 ? ` · ${formatNumber(s.rankCount)} 高能榜` : '');
+      ? (typeof s.vipCount === 'number' && s.vipCount > 0 ? ` · <span class="stat-num">${formatNumber(s.vipCount)}</span> 贵宾` : '')
+      : (typeof s.rankCount === 'number' && s.rankCount > 0 ? ` · <span class="stat-num">${formatNumber(s.rankCount)}</span> 高能榜` : '');
     infoDiv.innerHTML = `
       <div class="streamer-name">${platformTag}${escapeHtml(s.nickname)}</div>
       <div class="streamer-title">${escapeHtml(s.title || '正在直播')}</div>
