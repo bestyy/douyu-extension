@@ -5,6 +5,7 @@ importScripts('lib/douyu-api.js');
 importScripts('lib/bilibili-api.js');
 importScripts('lib/douyu-barrage.js');
 importScripts('lib/bilibili-barrage.js');
+importScripts('lib/bili-bridge-channel.js');
 
 // === 贵宾数弹幕客户端 ===
 // 通过 danmuproxy WebSocket 订阅 oni 消息（贵宾数），约每 6 秒推送一次
@@ -14,13 +15,22 @@ const barrageClient = new BarrageClient({
 
 // === B站高能榜弹幕客户端 ===
 // 订阅 ONLINE_RANK_COUNT 消息（高能榜在线数），约每 4-6 秒推送一次。
-// 通道由 syncBarrageRooms 按登录态决策：未登录走 SW 直连（认证参数与直播间页面
+// 通道由 biliBridge.sync() 按登录态决策：未登录走 SW 直连（认证参数与直播间页面
 // 弹幕连接逐字对齐，见 .pi/test-bili-comet.cjs），登录态走页面桥接（SW 直连握手
 // 必被 1006 风控）；两通道均为 10 分钟采样节奏，拿到数据即断开。
 // 若未来 SW 直连被风控（本轮全败且快速断开），onFallback 降级到页面通道。
 const bilibiliBarrageClient = new BilibiliBarrageClient({
   onRankCount: updateRankCount,
   onFallback: handleBiliChannelFallback
+});
+
+// === B站页面桥接通道（深 module） ===
+// 页面通道的全部状态与编排收进 BiliBridgeChannel：sync 决策通道、sample 驱动一轮
+// 采样、close 关桥接页、enableFallback 置降级标记；background 只读 enabled 做采样分支。
+const biliBridge = new BiliBridgeChannel({
+  storage: StorageHelper,
+  tabs: chrome.tabs,
+  isLoggedIn: isBiliLoggedIn
 });
 
 // === 观众数采样控制 ===
@@ -48,59 +58,8 @@ async function isBiliLoggedIn() {
   }
 }
 
-// 清除 streamers 中的观众数字段（关闭开关时调用，避免 popup 显示过期数据）
-async function stripViewerCounts() {
-  const streamers = (await StorageHelper.get('streamers')) || [];
-  if (!streamers.some(s => 'vipCount' in s || 'rankCount' in s)) {
-    return;
-  }
-  const cleaned = streamers.map(s => {
-    const { vipCount, rankCount, ...rest } = s;
-    return rest;
-  });
-  await StorageHelper.set('streamers', cleaned);
-}
-
 // Service Worker 每次唤醒时同步弹幕客户端状态（观众数开关 / B站页面通道）
-syncBarrageRooms();
-
-async function syncBarrageRooms() {
-  const viewerEnabled = await isViewerFetchEnabled();
-  const rooms = (await StorageHelper.get('rooms')) || [];
-  const hasBili = rooms.some(r => r.platform === 'bilibili');
-
-  if (!viewerEnabled) {
-    // 关闭观众数获取：清除已存观众数，停用页面通道并关闭桥接标签页
-    biliPageChannelEnabled = false;
-    await StorageHelper.set('biliPageChannelEnabled', false);
-    await stripViewerCounts();
-    await closeBridgeTab();
-    return;
-  }
-  if (!hasBili) {
-    // 无 B站房间：停用页面通道并关闭桥接标签页（斗鱼采样不受影响）
-    biliPageChannelEnabled = false;
-    await StorageHelper.set('biliPageChannelEnabled', false);
-    await closeBridgeTab();
-    return;
-  }
-  // 有 B站房间：通道选择 —— 登录态（SESSDATA）下 SW 直连握手必被 1006 风控，
-  // 必须走页面桥接；未登录时 SW 直连可用。持久化的降级标记（未登录时被风控
-  // 降级过）在 SW 重启后继续生效，与登录检测共同决定通道。
-  // 两种通道均为采样节奏（每 10 分钟一次）：页面通道每次采样临时打开桥接标签页，
-  // 拿到数据即关闭，不保留常驻页面与长连接（见 sampleViewerCounts）。
-  const useBridge = (await isBiliLoggedIn()) ||
-    (await StorageHelper.get('biliPageChannelEnabled')) === true;
-  if (useBridge !== biliPageChannelEnabled) {
-    biliPageChannelEnabled = useBridge;
-    await StorageHelper.set('biliPageChannelEnabled', useBridge);
-    console.log(`[bili] 通道切换为 ${useBridge ? '页面桥接' : 'SW 直连'}`);
-  }
-  if (!useBridge) {
-    // 未启用页面通道：清理可能残留的桥接标签页（旧版常驻页面/采样异常遗留）
-    await closeBridgeTab();
-  }
-}
+biliBridge.sync();
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
 async function updateVipCount({ roomId, vipCount }) {
@@ -141,17 +100,13 @@ async function updateRankCount({ roomId, rankCount }) {
 // 若未来 B站风控收紧（本轮采样全败且快速断开），onFallback 切换为页面通道：
 // content script 在 live.bilibili.com 页面上下文建连（lib/bilibili-page-bridge.js），
 // 通过 chrome.runtime 消息回传高能榜在线数。
-const BRIDGE_TAB_URL = 'https://live.bilibili.com/?dyext=1'; // 桥接标签页标记 URL
-let biliPageChannelEnabled = false; // 页面通道启用标记（持久化，SW 重启后仍生效）
+// 通道状态、桥接标签页生命周期与采样编排收进 BiliBridgeChannel（lib/bili-bridge-channel.js），
+// background 只保留降级编排（enableFallback → destroy → 通知）。
 
 // SW 直连采样被风控（本轮全败且快速断开）→ 降级到页面通道
 async function handleBiliChannelFallback() {
-  if (biliPageChannelEnabled || !(await isViewerFetchEnabled())) {
-    return;
-  }
-  biliPageChannelEnabled = true;
-  await StorageHelper.set('biliPageChannelEnabled', true); // 持久化，SW 重启后仍走页面通道
-  console.warn('[bili] SW 直连采样被风控，切换到页面通道');
+  // 模块内职责：置内存标记 + 持久化 + 日志（开关关闭/已启用时内部跳过）
+  await biliBridge.enableFallback();
   // 停止 SW 直连采样，避免继续触发风控（destroy 只断开连接，不触发降级判定）；
   // 桥接标签页不在此常驻，下一次 sampleViewerCounts 采样时临时打开
   bilibiliBarrageClient.destroy();
@@ -168,74 +123,6 @@ async function handleBiliChannelFallback() {
   }
 }
 
-// 关闭桥接标签页（无 B站房间 / 关闭观众数开关 / 采样完成后调用）
-async function closeBridgeTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-  for (const tab of tabs) {
-    if (tab.url && tab.url.includes('dyext=1')) {
-      chrome.tabs.remove(tab.id).catch(() => {});
-    }
-  }
-}
-
-// 等待桥接页 content script 就绪（新建/刷新后注入需要时间），返回是否就绪
-async function waitBridgeReady(tabId, attempts = 15) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: 'BILI_PING' });
-      return true;
-    } catch (e) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-  return false;
-}
-
-let bridgeEnsurePromise = null; // 并发去重：alarm 采样与设置变更可能同时触发创建
-
-// 确保桥接标签页存在（优先复用已打开的，否则自动创建，不抢焦点）
-async function ensureBridgeTab() {
-  if (bridgeEnsurePromise) {
-    return bridgeEnsurePromise; // 进行中的创建/检测共享同一次结果，避免重复弹出标签页
-  }
-  bridgeEnsurePromise = _ensureBridgeTab().finally(() => { bridgeEnsurePromise = null; });
-  return bridgeEnsurePromise;
-}
-
-async function _ensureBridgeTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-  const existing = tabs.find(t => t.url && t.url.includes('dyext=1'));
-  if (existing) {
-    // 扩展重载后旧页面的 content script 会失效（chrome.runtime 断开），消息无人响应；
-    // ping 检测存活，无响应则刷新页面重新注入
-    try {
-      await chrome.tabs.sendMessage(existing.id, { type: 'BILI_PING' });
-    } catch (e) {
-      console.warn('[bili] 桥接页 content script 未响应, 刷新重新注入');
-      await chrome.tabs.reload(existing.id);
-    }
-    await dedupeBridgeTabs();
-    return existing.id;
-  }
-  const tab = await chrome.tabs.create({ url: BRIDGE_TAB_URL, active: false });
-  await dedupeBridgeTabs();
-  return tab.id;
-}
-
-// 清理多余的桥接标签页：扩展重载瞬间新旧 SW 交替时，旧 SW 的创建请求可能已经发出，
-// 导致残留两个 dyext=1 页面（内存锁无法跨 SW 实例生效），统一保留第一个
-async function dedupeBridgeTabs() {
-  const tabs = await chrome.tabs.query({ url: 'https://live.bilibili.com/*' });
-  const bridges = tabs.filter(t => t.url && t.url.includes('dyext=1'));
-  for (const extra of bridges.slice(1)) {
-    console.warn(`[bili] 发现多余桥接标签页 tabId=${extra.id}, 关闭`);
-    chrome.tabs.remove(extra.id).catch(() => {});
-  }
-}
-
-// 桥接标签页只在采样期间存在（临时打开 → 采样完成/超时后由 SW 关闭），
-// 不需要「用户关闭后自动重开」的兜底逻辑（常驻模式遗留，临时模式下会导致
-// SW 主动关页后被重新打开，页面残留）。
 // === 初始化 ===
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await StorageHelper.getAll();
@@ -250,10 +137,10 @@ chrome.runtime.onInstalled.addListener(async () => {
     });
   }
 
-  // 通道选择（页面桥接 vs SW 直连）统一由 syncBarrageRooms 按登录态/降级标记决策，
-  // 这里不再重置标记或关闭桥接页，避免与顶层 syncBarrageRooms() 竞态覆盖。
-  // （登录用户：ensureBridgeTab 会 ping 存活检测，重载后失效的桥接页自动刷新重注入）
-  await syncBarrageRooms();
+  // 通道选择（页面桥接 vs SW 直连）统一由 biliBridge.sync() 按登录态/降级标记决策，
+  // 这里不再重置标记或关闭桥接页，避免与顶层 biliBridge.sync() 竞态覆盖。
+  // （登录用户：桥接页由 _ensureTab 的 ping 存活检测，重载后失效的页面自动刷新重注入）
+  await biliBridge.sync();
 
   await createAlarm();
 });
@@ -294,34 +181,15 @@ async function sampleViewerCounts() {
     barrageClient.sample(douyuIds);
   }
   if (bilibiliIds.length > 0) {
-    if (biliPageChannelEnabled) {
+    if (biliBridge.enabled) {
       // 页面通道（登录态主通道/降级后备）：临时开页 → 长连接采样 → 桥接页发
       // BILI_SAMPLE_DONE 后由 SW 关闭页面（不在此长时间等待，消息事件可靠唤醒
       // 休眠中的 SW 完成关页，避免等待期间 SW 空闲被终止）
-      await startBiliBridgeSample(bilibiliIds);
+      await biliBridge.sample(bilibiliIds);
     } else {
       // SW 直连主通道（未登录）：每个房间一条短连，收到高能榜在线数即断开（认证参数与页面弹幕一致）
       bilibiliBarrageClient.sample(bilibiliIds);
     }
-  }
-}
-
-// 页面通道采样：打开（或复用）桥接标签页并驱动一轮采样。
-// 采样完成/超时由桥接页发 BILI_SAMPLE_DONE，SW 收到后关闭页面；不在这里
-// await 完成信号（最长 60 秒的等待会让 SW 空闲被终止，而消息事件可靠唤醒）。
-async function startBiliBridgeSample(roomIds) {
-  const tabId = await ensureBridgeTab();
-  const ready = await waitBridgeReady(tabId);
-  if (!ready) {
-    console.warn('[bili] 桥接页长时间未就绪, 本轮跳过');
-    await closeBridgeTab();
-    return;
-  }
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: 'BILI_SAMPLE_ROOMS', roomIds });
-  } catch (e) {
-    console.warn('[bili] 驱动桥接页采样失败, 本轮跳过');
-    await closeBridgeTab();
   }
 }
 
@@ -505,7 +373,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SETTINGS_UPDATED':
       // 重建轮询 alarm，重新同步弹幕客户端状态，并立即采样一次（开关即时生效）
-      createAlarm().then(() => syncBarrageRooms()).then(() => sampleViewerCounts())
+      createAlarm().then(() => biliBridge.sync()).then(() => sampleViewerCounts())
         .then(() => sendResponse({ ok: true }));
       return true;
 
@@ -526,7 +394,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 桥接页本轮采样完成/超时 → 关闭桥接标签页（消息事件可靠唤醒休眠中的 SW，
     // 避免采样流程在 SW 侧长时间等待导致空闲被终止）
     case 'BILI_SAMPLE_DONE':
-      closeBridgeTab().catch(() => {});
+      biliBridge.close().catch(() => {});
       sendResponse({ ok: true });
       return true;
 
@@ -579,7 +447,7 @@ async function handleAddRoom(rawRoomId, platform) {
   }
 
   await refreshRooms();
-  await syncBarrageRooms();
+  await biliBridge.sync();
   // 立即采样一次观众数，不用等下一个 10 分钟周期
   await sampleViewerCounts();
 
@@ -601,7 +469,7 @@ async function handleRemoveRoom(roomId, platform) {
   const onlineCount = streamers.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
 
-  await syncBarrageRooms();
+  await biliBridge.sync();
   // 移除房间后立即采样，刷新剩余房间的观众数
   await sampleViewerCounts();
 

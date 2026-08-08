@@ -6,7 +6,7 @@
 
 ```
 douyu-extensions/
-├── background.js          # Service Worker — 核心轮询、房间管理、通知
+├── background.js          # Service Worker — 核心轮询、房间管理、通知（桥接通道逻辑已外移）
 ├── manifest.json          # Chrome Extension Manifest V3
 ├── lib/
 │   ├── douyu-api.js       # 斗鱼公开 API 封装（/betard/ endpoint）
@@ -14,6 +14,7 @@ douyu-extensions/
 │   ├── douyu-barrage.js   # 斗鱼弹幕 WS 采样客户端（贵宾数 oni 消息，每房间一条连接）
 │   ├── bilibili-barrage.js   # B站弹幕 WS 采样客户端（高能榜在线数，SW 直连主通道 + 页面通道复用）
 │   ├── bilibili-page-bridge.js # B站页面通道 content script（桥接标签页，仅 ?dyext=1 激活）
+│   ├── bili-bridge-channel.js # B站页面桥接通道深 module（sync/sample/close/enableFallback/enabled）
 │   └── storage.js         # chrome.storage.local 封装
 ├── options/
 │   ├── options.html       # 设置页：添加/删除房间、刷新间隔
@@ -24,12 +25,13 @@ douyu-extensions/
 │   ├── popup.js           # 弹窗逻辑
 │   └── popup.css
 ├── icons/                 # 扩展图标
+├── test/                  # node:test 测试（npm test）
 └── generate-icons.js      # 图标生成工具
 ```
 
 ## Key Files
 
-- `background.js` - Service Worker，管理定时轮询（`refreshRooms`）、添加/删除房间（`handleAddRoom`/`handleRemoveRoom`）、发送桌面通知
+- `background.js` - Service Worker，管理定时轮询（`refreshRooms`）、添加/删除房间（`handleAddRoom`/`handleRemoveRoom`）、发送桌面通知；B站页面桥接通道的状态与编排收进 `BiliBridgeChannel`，background 只保留降级编排（`handleBiliChannelFallback`：`enableFallback` → `destroy` → 通知）
 - `lib/douyu-api.js` - 斗鱼 API 封装，使用公开端点 `https://www.douyu.com/betard/{roomId}`（无需 Cookie）
   - `fetchRoomInfo(roomId)` — 查询单个房间的直播信息
   - `batchFetchRoomInfo(roomIds)` — 批量并行查询
@@ -53,6 +55,12 @@ douyu-extensions/
   - comet 通道（getDanmuInfo 的 host_list，2245 端口）；认证包（op=7, protover=2）需带真实房号（短房号先经 room_init 解析）、spi 签发配对 buvid、support_ack/queue_uid/scene 字段
 - `lib/bilibili-page-bridge.js` - B站页面通道 content script（登录态主通道 + SW 直连被风控时的降级后备，由 manifest 注入 live.bilibili.com）
   - 仅桥接标签页激活（URL 带 `?dyext=1`，SW 采样时临时创建/复用/存活检测）；响应 `BILI_PING`（存活检测）与 `BILI_SAMPLE_ROOMS`（驱动一轮采样：长连接建连，收到各房间高能榜在线数即断开全部 WS，60s 总超时兜底），结果经 `BILI_RANK_COUNT` 回传，完成后发 `BILI_SAMPLE_DONE` 通知 SW 关闭本页
+- `lib/bili-bridge-channel.js` - B站页面桥接通道深 module（构造注入 `{ storage, tabs, isLoggedIn }`，UMD 双兼容：importScripts + node require）
+  - `sync()` — 通道决策：查询「观众数开关 / 房间列表有无 B站 / 登录态 / 持久化降级标记」产出通道状态（`enabled` getter），并处理副作用（关开关时清 streamers 的 vipCount/rankCount、关桥接页、持久化、切换日志）
+  - `sample(roomIds)` — 页面通道采样：`_ensureTab`（并发去重锁）→ `_waitReady`（ping 重试）→ `BILI_SAMPLE_ROOMS`；未就绪/发送失败 → log + `close()`，fire-and-forget 不等待完成信号
+  - `close()` — 只关 dyext=1 标记页，用户自开的 live.bilibili.com 页面不动
+  - `enableFallback()` — 置内存标记 + 持久化 `biliPageChannelEnabled` + 日志（开关关闭/已启用时跳过）；`console.warn('[bili] SW 直连采样被风控，切换到页面通道')`
+  - 测试：`test/bili-bridge-channel.test.cjs`（node:test，fake storage/tabs 设施，覆盖 14 个行为用例）
 - `options/options.js` - 设置页，通过 `chrome.runtime.sendMessage` 与 background 通信
 
 ## Storage Schema
@@ -63,6 +71,7 @@ streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers
 notifiedRooms:  [{ roomId: string, platform: string }]  — 已发送过通知的房间 ID
 lastRefresh:    timestamp
 settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean, fetchViewerCount: boolean }
+biliPageChannelEnabled: boolean  — 页面桥接通道启用标记（SW 直连被风控降级时持久化，重启后继续生效；由 biliBridge.sync() 统一重写）
 ```
 
 ## Non-Obvious Commands & Workflows
@@ -81,12 +90,12 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, o
     - **通道**：必须用 getDanmuInfo 返回的 comet 服务器（`host_list`，2245 端口）；broadcast 7826 通道对非官方客户端握手即 1006，绝不能使用（旧代码硬编码 7826 优先是持续 1006 的直接原因）
     - **认证包字段**：必须带 `support_ack: true`、`queue_uid`（随机 8 位即可）、`scene: 'room'`（页面弹幕连接逐字对照抓包确认），缺失即被拒；`protover: 2` 请求 zlib（3 会收到 brotli，浏览器无解压 API）
     - **buvid 配对**：必须用 spi 接口（`/x/frontend/finger/spi`）签发的 buvid3/buvid4 配对（成对写入 Cookie）；旧版本用 `crypto.randomUUID()` 写入 buvid4 污染配对也会 1006。`resolveBuvid3()` 优先 spi，失败回退已有 Cookie，再兜底随机
-  - **通道选择（登录态决定，2026-08 用户实证）**：登录态（SESSDATA Cookie）下 SW 直连的弹幕 WS 握手携带登录 Cookie，实测必被 1006 风控（spi 配对正确仍被拒，**采样短连与长连接均如此**）；未登录（无 Cookie）时 SW 直连短连采样可用。`syncBarrageRooms` 用 `isBiliLoggedIn()`（chrome.cookies.get SESSDATA）决策：**登录 → 页面桥接**（`biliPageChannelEnabled` 持久化；采样时 `ensureBridgeTab` 临时开页 + `BILI_SAMPLE_ROOMS` 驱动长连接采样，完成即关页），**未登录 → SW 直连采样**（`bilibiliBarrageClient.sample`）；未登录时被风控降级过的标记在重启后继续生效
+  - **通道选择（登录态决定，2026-08 用户实证）**：登录态（SESSDATA Cookie）下 SW 直连的弹幕 WS 握手携带登录 Cookie，实测必被 1006 风控（spi 配对正确仍被拒，**采样短连与长连接均如此**）；未登录（无 Cookie）时 SW 直连短连采样可用。`biliBridge.sync()` 用 `isBiliLoggedIn()`（chrome.cookies.get SESSDATA）决策：**登录 → 页面桥接**（`biliPageChannelEnabled` 持久化；采样时 `biliBridge.sample()` 临时开页 + `BILI_SAMPLE_ROOMS` 驱动长连接采样，完成即关页），**未登录 → SW 直连采样**（`bilibiliBarrageClient.sample`）；未登录时被风控降级过的标记在重启后继续生效
   - **页面通道必须长连接（用户实测）**：登录态下桥接页短连采样同样收不到数据；`setRooms()` 长连接（心跳 30s + 指数退避重连）正常。2026-08 起两通道统一为 10 分钟采样节奏：页面通道每次采样临时开桥接页 → 长连接建连（拿首条高能榜在线数即收尾，60s 总超时兜底）→ `BILI_SAMPLE_DONE` 消息驱动 SW 关闭页面，平时无 WS 无常驻页面
-  - **SW 直连（未登录）**：`sampleViewerCounts` 的 B站分支直接 `bilibiliBarrageClient.sample(ids)`（SW 环境 chrome-extension Origin、无 Cookie 握手均实测可用）；被风控（本轮全败且快速断开）时 `onFallback` → `handleBiliChannelFallback`（持久化标记 `biliPageChannelEnabled`）；标记统一由 `syncBarrageRooms` 按登录态/降级状态重写（onInstalled 不再重置，避免与顶层同步竞态覆盖，`ensureBridgeTab` 的 ping 存活检测会自动刷新重注入失效桥接页）
-  - 桥接标签页生命周期（临时采样，2026-08）：`ensureBridgeTab`（并发去重锁，防止 alarm 与设置变更竞态重复弹页）用 `BILI_PING` 存活检测 + reload 重注入；`dedupeBridgeTabs` 清理残留的多余桥接页（跨 SW 生命周期重载瞬间旧 SW 的创建请求可能已发出，内存锁无法跨实例）；采样完成/超时后桥接页发 `BILI_SAMPLE_DONE` 触发 `closeBridgeTab`（消息事件可靠唤醒休眠中的 SW，不在 SW 侧长等待）；无 B站房间或关闭开关时同样 `closeBridgeTab` 关闭；**无 onRemoved 自动重开**（临时模式下 SW 主动关页，兜底重开会残留页面）
+  - **SW 直连（未登录）**：`sampleViewerCounts` 的 B站分支按 `biliBridge.enabled` 分流——关闭时直接 `bilibiliBarrageClient.sample(ids)`（SW 环境 chrome-extension Origin、无 Cookie 握手均实测可用）；被风控（本轮全败且快速断开）时 `onFallback` → `handleBiliChannelFallback` 编排：`biliBridge.enableFallback()`（持久化标记 `biliPageChannelEnabled`）→ `bilibiliBarrageClient.destroy()` → `chrome.notifications.create(...)`；标记统一由 `biliBridge.sync()` 按登录态/降级状态重写（onInstalled 不再重置，避免与顶层同步竞态覆盖，`_ensureTab` 的 ping 存活检测会自动刷新重注入失效桥接页）
+  - 桥接标签页生命周期（临时采样，2026-08）：`biliBridge.sample()` 内 `_ensureTab`（并发去重锁 `_ensurePromise`，防止 alarm 与设置变更竞态重复弹页）用 `BILI_PING` 存活检测 + reload 重注入；`_dedupeTabs` 清理残留的多余桥接页（跨 SW 生命周期重载瞬间旧 SW 的创建请求可能已发出，内存锁无法跨实例）；采样完成/超时后桥接页发 `BILI_SAMPLE_DONE` 触发 `biliBridge.close()`（消息事件可靠唤醒休眠中的 SW，不在 SW 侧长等待）；无 B站房间或关闭开关时同样 `close()` 关闭；**无 onRemoved 自动重开**（临时模式下 SW 主动关页，兜底重开会残留页面）
   - ADD_ROOM/REMOVE_ROOM、设置变更（SETTINGS_UPDATED，如切换观众数开关）后立即采样一次，不用等下一个 10 分钟周期
-- 观众数开关：设置页 `fetchViewerCount`（默认 true）控制是否获取房间观众数。关闭时 `syncBarrageRooms` 清除 `streamers` 中的 `vipCount`/`rankCount`、停用页面通道并关闭桥接标签页；无 B站房间时同样关闭桥接标签页（斗鱼采样不受影响）；设置变更（`SETTINGS_UPDATED`）会触发重新同步，开关即时生效
+- 观众数开关：设置页 `fetchViewerCount`（默认 true）控制是否获取房间观众数。关闭时 `biliBridge.sync()` 清除 `streamers` 中的 `vipCount`/`rankCount`、停用页面通道并关闭桥接标签页；无 B站房间时同样关闭桥接标签页但**不清 streamers**（斗鱼贵宾数仍有效，该分支有测试覆盖）；设置变更（`SETTINGS_UPDATED`）会触发重新同步，开关即时生效
 
 ## Gotchas
 
@@ -97,6 +106,7 @@ settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, o
 - **`room_src`**（封面图）：斗鱼 `/betard/` API 返回相对路径，`fetchRoomInfo` 中已做三级补全：`http` 开头直接使用，`//` 开头补 `https:`，否则补 `https://rpic.douyucdn.cn/`；`owner_avatar` 返回完整 URL，无需处理
 - **数据迁移**：`storage.js` 的 `migrateLegacyFormat` 在 `onInstalled` 时自动将旧格式（`notifiedRooms` 为 `string[]`、`rooms`/`streamers` 无 `platform` 字段）迁移到新格式（`{roomId, platform}[]`）
 - **封面图回退**：popup 中封面图加载失败时自动回退到 `icons/icon48.png`，且使用 `referrerPolicy: 'no-referrer'` 避免跨域引用问题
+- **测试设施**：`npm test`（node:test，零依赖）跑 `test/` 目录；lib 文件 UMD 双兼容（`importScripts` 下 `module` 未定义自动跳过，node 下可 `require`），module 内不引用 `chrome` 全局（依赖构造注入）才能被测试
 
 ## Agent skills
 
