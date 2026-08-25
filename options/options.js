@@ -11,8 +11,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const addStatus = document.getElementById('addStatus');
   const refreshInterval = document.getElementById('refreshInterval');
   const notificationsEnabled = document.getElementById('notificationsEnabled');
-  const fetchViewerCount = document.getElementById('fetchViewerCount');
-
+  const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
+  const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
   // 加载现有设置
   if (data.settings?.refreshInterval) {
     refreshInterval.value = data.settings.refreshInterval;
@@ -20,9 +20,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (data.settings?.notificationsEnabled !== undefined) {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
   }
-  if (data.settings?.fetchViewerCount !== undefined) {
-    fetchViewerCount.checked = data.settings.fetchViewerCount;
-  }
+  // 观众数开关（v1.x 起按平台拆分）：新字段优先，未写入时回退旧总开关 fetchViewerCount 语义
+  fetchDouyuViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchDouyuViewerCount');
+  fetchBilibiliViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchBilibiliViewerCount');
 
   // Migration check - old cookie config detected
   if (data.cookie && data.cookie.value && (!data.rooms || data.rooms.length === 0)) {
@@ -158,14 +158,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     refreshInterval.value = interval;
     // 合并现有 settings（保留 openInCurrentTab 等字段）
     const data = await chrome.storage.local.get('settings');
-    await chrome.storage.local.set({
-      settings: {
-        ...(data.settings || {}),
-        refreshInterval: interval,
-        notificationsEnabled: notificationsEnabled.checked,
-        fetchViewerCount: fetchViewerCount.checked
-      }
-    });
+    const nextSettings = {
+      ...(data.settings || {}),
+      refreshInterval: interval,
+      notificationsEnabled: notificationsEnabled.checked,
+      fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
+      fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
+    };
+    // 旧总开关退役：两个平台字段已显式写入，删除避免回退逻辑歧义
+    delete nextSettings.fetchViewerCount;
+    await chrome.storage.local.set({ settings: nextSettings });
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
     showStatus(document.getElementById('settingsStatus'), '设置已保存', 'success');
   });
@@ -178,13 +180,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // 观众数开关：即时生效（通知 background 同步弹幕客户端连接）
-  fetchViewerCount.addEventListener('change', async () => {
+  // 两个平台字段同时写入，未改动的平台取 DOM 当前状态；旧总开关一并删除
+  async function onViewerToggle() {
     const data = await chrome.storage.local.get('settings');
-    const settings = data.settings || {};
-    settings.fetchViewerCount = fetchViewerCount.checked;
-    await chrome.storage.local.set({ settings });
+    const nextSettings = {
+      ...(data.settings || {}),
+      fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
+      fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
+    };
+    delete nextSettings.fetchViewerCount;
+    await chrome.storage.local.set({ settings: nextSettings });
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
-  });
+  }
+  fetchDouyuViewerCount.addEventListener('change', onViewerToggle);
+  fetchBilibiliViewerCount.addEventListener('change', onViewerToggle);
 
   // 初始渲染
   await renderRoomList();
@@ -358,4 +367,13 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// 观众数平台开关读取：新字段（fetchDouyuViewerCount / fetchBilibiliViewerCount）优先，
+// 未写入时回退旧总开关 fetchViewerCount 语义（不存在的字段视为开启）
+function viewerToggleEnabled(settings, key) {
+  if (settings?.[key] !== undefined) {
+    return settings[key] !== false;
+  }
+  return settings?.fetchViewerCount !== false;
 }

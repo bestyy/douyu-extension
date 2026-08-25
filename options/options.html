@@ -62,11 +62,16 @@
     <h2 class="group-title">观众数设置</h2>
     <section class="card">
       <label class="toggle-row">
-        <input type="checkbox" id="fetchViewerCount" checked>
-        <span>获取房间观众数</span>
+        <input type="checkbox" id="fetchDouyuViewerCount" checked>
+        <span>斗鱼 · 贵宾数</span>
+      </label>
+      <div class="cell-divider"></div>
+      <label class="toggle-row">
+        <input type="checkbox" id="fetchBilibiliViewerCount" checked>
+        <span>B站 · 高能榜在线数</span>
       </label>
     </section>
-    <p class="group-hint">斗鱼显示贵宾数，B站显示高能榜在线数（每 10 分钟更新一次）</p>
+    <p class="group-hint">两个开关独立控制，关闭后停止对应平台的观众数采样（每 10 分钟更新一次）</p>
   </div>
 
   <script src="options.js"></script>

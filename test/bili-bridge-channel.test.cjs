@@ -96,6 +96,8 @@ const DEFAULT_SETTINGS = {
   refreshInterval: 60,
   notificationsEnabled: true,
   openInCurrentTab: false,
+  fetchDouyuViewerCount: true,
+  fetchBilibiliViewerCount: true,
   fetchViewerCount: true
 };
 
@@ -108,9 +110,9 @@ const BRIDGE_URL = 'https://live.bilibili.com/?dyext=1';
 
 // === 用例 ===
 
-test('sync：关闭观众数开关 → 停用通道、清 streamers 观众数字段（保留其余字段）、关桥接页', async () => {
+test('sync：关闭 B站观众数开关 → 停用通道、清 streamers 的 rankCount（保留 vipCount）、关桥接页', async () => {
   const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS, fetchViewerCount: false },
+    settings: { ...DEFAULT_SETTINGS, fetchBilibiliViewerCount: false },
     rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }],
     streamers: [{ roomId: '1', platform: 'bilibili', nickname: '主播', title: 'T', vipCount: 5, rankCount: 3 }],
     biliPageChannelEnabled: true
@@ -123,10 +125,26 @@ test('sync：关闭观众数开关 → 停用通道、清 streamers 观众数字
 
   assert.equal(ch.enabled, false);
   assert.equal(storage.store.biliPageChannelEnabled, false);
-  // 用例 14：vipCount/rankCount 被删，其余字段原样保留
-  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'bilibili', nickname: '主播', title: 'T' }]);
+  // 只删 B站 rankCount，斗鱼 vipCount 原样保留
+  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'bilibili', nickname: '主播', title: 'T', vipCount: 5 }]);
   // 桥接页被关
   assert.equal(tabs.tabs.length, 0);
+});
+
+test('sync：旧总开关 fetchViewerCount=false 回退 → 停用通道、清 rankCount（新字段未写入时）', async () => {
+  const storage = createFakeStorage({
+    settings: { refreshInterval: 60, notificationsEnabled: true, openInCurrentTab: false, fetchViewerCount: false },
+    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }],
+    streamers: [{ roomId: '1', platform: 'bilibili', nickname: '主播', rankCount: 9 }]
+  });
+  const tabs = createFakeTabs();
+
+  const ch = makeChannel(storage, tabs);
+  await ch.sync();
+
+  assert.equal(ch.enabled, false);
+  assert.equal(storage.store.biliPageChannelEnabled, false);
+  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'bilibili', nickname: '主播' }]);
 });
 
 test('sync：无 B站房间 → 停用通道但不清 streamers（斗鱼贵宾数仍有效）', async () => {
@@ -312,8 +330,8 @@ test('enableFallback：启用页面通道并持久化', async () => {
   assert.equal(storage.store.biliPageChannelEnabled, true);
 });
 
-test('enableFallback：关闭观众数开关时不降级', async () => {
-  const storage = createFakeStorage({ settings: { ...DEFAULT_SETTINGS, fetchViewerCount: false } });
+test('enableFallback：关闭 B站观众数开关时不降级', async () => {
+  const storage = createFakeStorage({ settings: { ...DEFAULT_SETTINGS, fetchBilibiliViewerCount: false } });
   const tabs = createFakeTabs();
 
   const ch = makeChannel(storage, tabs);

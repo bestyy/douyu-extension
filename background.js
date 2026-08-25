@@ -34,15 +34,22 @@ const biliBridge = new BiliBridgeChannel({
 });
 
 // === 观众数采样控制 ===
-// 设置页开关 fetchViewerCount 控制是否获取观众数（斗鱼贵宾数/B站高能榜在线数）；
+// 设置页观众数开关按平台拆分：fetchDouyuViewerCount（斗鱼贵宾数）/ fetchBilibiliViewerCount（B站高能榜在线数），
+// 旧版本仅有总开关 fetchViewerCount（读取时回退兼容）；各平台采样独立受控：
 // 采样模式：每 10 分钟由 chrome.alarms 驱动一次短连，拿到数据立即断开，
 // 平时不保持任何 WS 连接（连接数不再随房间数增长）
 const VIEWER_SAMPLE_INTERVAL = 10; // 观众数采样间隔（分钟），与 sampleViewerCounts alarm 周期一致
 
-// 读取观众数获取开关（settings.fetchViewerCount，默认开启）
-async function isViewerFetchEnabled() {
+// 读取某平台的观众数获取开关（settings.fetchDouyuViewerCount / fetchBilibiliViewerCount，默认开启）；
+// 新字段未写入时回退旧总开关 fetchViewerCount 语义（旧版本仅存有该字段）
+async function isViewerFetchEnabled(platform) {
   const settings = await StorageHelper.get('settings');
-  return settings?.fetchViewerCount !== false;
+  if (!settings) return true;
+  const key = platform === 'bilibili' ? 'fetchBilibiliViewerCount' : 'fetchDouyuViewerCount';
+  if (settings[key] !== undefined) {
+    return settings[key] !== false;
+  }
+  return settings.fetchViewerCount !== false;
 }
 
 // 检测 B站登录态：SESSDATA Cookie 存在即视为已登录。
@@ -59,11 +66,11 @@ async function isBiliLoggedIn() {
 }
 
 // Service Worker 每次唤醒时同步弹幕客户端状态（观众数开关 / B站页面通道）
-biliBridge.sync();
+syncViewerSettings();
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
 async function updateVipCount({ roomId, vipCount }) {
-  if (!(await isViewerFetchEnabled())) {
+  if (!(await isViewerFetchEnabled('douyu'))) {
     return;
   }
   const streamers = (await StorageHelper.get('streamers')) || [];
@@ -78,7 +85,7 @@ async function updateVipCount({ roomId, vipCount }) {
 // 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）
 // 页面通道为长连接模式（每 4-6 秒推送一次），仅在数值变化时写 storage 与打日志
 async function updateRankCount({ roomId, rankCount }) {
-  if (!(await isViewerFetchEnabled())) {
+  if (!(await isViewerFetchEnabled('bilibili'))) {
     return;
   }
   const streamers = (await StorageHelper.get('streamers')) || [];
@@ -140,7 +147,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   // 通道选择（页面桥接 vs SW 直连）统一由 biliBridge.sync() 按登录态/降级标记决策，
   // 这里不再重置标记或关闭桥接页，避免与顶层 biliBridge.sync() 竞态覆盖。
   // （登录用户：桥接页由 _ensureTab 的 ping 存活检测，重载后失效的页面自动刷新重注入）
-  await biliBridge.sync();
+  await syncViewerSettings();
 
   await createAlarm();
 });
@@ -170,17 +177,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // 桥接标签页，在页面上下文建立长连接（登录态下短连同样被风控），拿到高能榜
 // 在线数即断开并关闭页面，节奏与斗鱼一致。
 async function sampleViewerCounts() {
-  if (!(await isViewerFetchEnabled())) {
-    return;
-  }
   const rooms = (await StorageHelper.get('rooms')) || [];
   const douyuIds = rooms.filter(r => r.platform === 'douyu').map(r => String(r.roomId));
   const bilibiliIds = rooms.filter(r => r.platform === 'bilibili').map(r => String(r.roomId));
 
-  if (douyuIds.length > 0) {
+  // 斗鱼分支：由斗鱼开关独立控制
+  if (douyuIds.length > 0 && (await isViewerFetchEnabled('douyu'))) {
     barrageClient.sample(douyuIds);
   }
-  if (bilibiliIds.length > 0) {
+  // B站分支：由 B站开关独立控制
+  if (bilibiliIds.length > 0 && (await isViewerFetchEnabled('bilibili'))) {
     if (biliBridge.enabled) {
       // 页面通道（登录态主通道/降级后备）：临时开页 → 长连接采样 → 桥接页发
       // BILI_SAMPLE_DONE 后由 SW 关闭页面（不在此长时间等待，消息事件可靠唤醒
@@ -191,6 +197,34 @@ async function sampleViewerCounts() {
       bilibiliBarrageClient.sample(bilibiliIds);
     }
   }
+}
+
+// 按平台开关清理过期的观众数字段（关闭斗鱼开关 → 清 vipCount；关闭 B站开关 → 清 rankCount），
+// 避免 popup 显示关闭前残留的旧数据；B站通道侧的清理见 biliBridge.sync
+async function pruneStaleViewerCounts() {
+  const [douyuOn, biliOn] = await Promise.all([
+    isViewerFetchEnabled('douyu'),
+    isViewerFetchEnabled('bilibili')
+  ]);
+  if (douyuOn && biliOn) return;
+  const streamers = (await StorageHelper.get('streamers')) || [];
+  if (!streamers.some(s => (!douyuOn && 'vipCount' in s) || (!biliOn && 'rankCount' in s))) {
+    return;
+  }
+  const cleaned = streamers.map(s => {
+    const next = { ...s };
+    if (!douyuOn) delete next.vipCount;
+    if (!biliOn) delete next.rankCount;
+    return next;
+  });
+  await StorageHelper.set('streamers', cleaned);
+}
+
+// 观众数设置同步入口：B站页面通道决策（biliBridge.sync）+ 按开关清理过期观众数字段。
+// biliBridge 只负责 B站相关状态；斗鱼字段（vipCount）清理由本入口统一处理
+async function syncViewerSettings() {
+  await biliBridge.sync();
+  await pruneStaleViewerCounts();
 }
 
 // === 核心轮询逻辑 ===
@@ -373,7 +407,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SETTINGS_UPDATED':
       // 重建轮询 alarm，重新同步弹幕客户端状态，并立即采样一次（开关即时生效）
-      createAlarm().then(() => biliBridge.sync()).then(() => sampleViewerCounts())
+      createAlarm().then(() => syncViewerSettings()).then(() => sampleViewerCounts())
         .then(() => sendResponse({ ok: true }));
       return true;
 
@@ -447,7 +481,7 @@ async function handleAddRoom(rawRoomId, platform) {
   }
 
   await refreshRooms();
-  await biliBridge.sync();
+  await syncViewerSettings();
   // 立即采样一次观众数，不用等下一个 10 分钟周期
   await sampleViewerCounts();
 
@@ -469,7 +503,7 @@ async function handleRemoveRoom(roomId, platform) {
   const onlineCount = streamers.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
 
-  await biliBridge.sync();
+  await syncViewerSettings();
   // 移除房间后立即采样，刷新剩余房间的观众数
   await sampleViewerCounts();
 

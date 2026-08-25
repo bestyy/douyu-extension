@@ -56,7 +56,7 @@ douyu-extensions/
 - `lib/bilibili-page-bridge.js` - B站页面通道 content script（登录态主通道 + SW 直连被风控时的降级后备，由 manifest 注入 live.bilibili.com）
   - 仅桥接标签页激活（URL 带 `?dyext=1`，SW 采样时临时创建/复用/存活检测）；响应 `BILI_PING`（存活检测）与 `BILI_SAMPLE_ROOMS`（驱动一轮采样：长连接建连，收到各房间高能榜在线数即断开全部 WS，60s 总超时兜底），结果经 `BILI_RANK_COUNT` 回传，完成后发 `BILI_SAMPLE_DONE` 通知 SW 关闭本页
 - `lib/bili-bridge-channel.js` - B站页面桥接通道深 module（构造注入 `{ storage, tabs, isLoggedIn }`，UMD 双兼容：importScripts + node require）
-  - `sync()` — 通道决策：查询「观众数开关 / 房间列表有无 B站 / 登录态 / 持久化降级标记」产出通道状态（`enabled` getter），并处理副作用（关开关时清 streamers 的 vipCount/rankCount、关桥接页、持久化、切换日志）
+  - `sync()` — 通道决策：查询「B站观众数开关 / 房间列表有无 B站 / 登录态 / 持久化降级标记」产出通道状态（`enabled` getter），并处理副作用（关 B站开关时清 streamers 的 rankCount、关桥接页、持久化、切换日志；斗鱼 vipCount 不在此处理，由 background `pruneStaleViewerCounts` 负责）
   - `sample(roomIds)` — 页面通道采样：`_ensureTab`（并发去重锁）→ `_waitReady`（ping 重试）→ `BILI_SAMPLE_ROOMS`；未就绪/发送失败 → log + `close()`，fire-and-forget 不等待完成信号
   - `close()` — 只关 dyext=1 标记页，用户自开的 live.bilibili.com 页面不动
   - `enableFallback()` — 置内存标记 + 持久化 `biliPageChannelEnabled` + 日志（开关关闭/已启用时跳过）；`console.warn('[bili] SW 直连采样被风控，切换到页面通道')`
@@ -70,7 +70,7 @@ rooms:          [{ roomId: string, nickname: string, platform: 'douyu'|'bilibili
 streamers:      [{ roomId, nickname, title, online, coverUrl, avatarUrl, viewers, category, startTime, platform, vipCount?, rankCount? }]  — vipCount 为斗鱼贵宾数（弹幕 oni 推送），rankCount 为 B站高能榜在线数（ONLINE_RANK_COUNT 推送），均非 API 字段
 notifiedRooms:  [{ roomId: string, platform: string }]  — 已发送过通知的房间 ID
 lastRefresh:    timestamp
-settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean, fetchViewerCount: boolean }
+settings:       { refreshInterval: number(秒), notificationsEnabled: boolean, openInCurrentTab: boolean, fetchDouyuViewerCount: boolean, fetchBilibiliViewerCount: boolean, fetchViewerCount?: boolean }  — 观众数开关按平台拆分（2026-08）：斗鱼/B站各自独立；旧版仅有总开关 fetchViewerCount，读取时回退其语义（新字段优先），保存设置时删除旧字段
 biliPageChannelEnabled: boolean  — 页面桥接通道启用标记（SW 直连被风控降级时持久化，重启后继续生效；由 biliBridge.sync() 统一重写）
 ```
 
@@ -95,7 +95,7 @@ biliPageChannelEnabled: boolean  — 页面桥接通道启用标记（SW 直连�
   - **SW 直连（未登录）**：`sampleViewerCounts` 的 B站分支按 `biliBridge.enabled` 分流——关闭时直接 `bilibiliBarrageClient.sample(ids)`（SW 环境 chrome-extension Origin、无 Cookie 握手均实测可用）；被风控（本轮全败且快速断开）时 `onFallback` → `handleBiliChannelFallback` 编排：`biliBridge.enableFallback()`（持久化标记 `biliPageChannelEnabled`）→ `bilibiliBarrageClient.destroy()` → `chrome.notifications.create(...)`；标记统一由 `biliBridge.sync()` 按登录态/降级状态重写（onInstalled 不再重置，避免与顶层同步竞态覆盖，`_ensureTab` 的 ping 存活检测会自动刷新重注入失效桥接页）
   - 桥接标签页生命周期（临时采样，2026-08）：`biliBridge.sample()` 内 `_ensureTab`（并发去重锁 `_ensurePromise`，防止 alarm 与设置变更竞态重复弹页）用 `BILI_PING` 存活检测 + reload 重注入；`_dedupeTabs` 清理残留的多余桥接页（跨 SW 生命周期重载瞬间旧 SW 的创建请求可能已发出，内存锁无法跨实例）；采样完成/超时后桥接页发 `BILI_SAMPLE_DONE` 触发 `biliBridge.close()`（消息事件可靠唤醒休眠中的 SW，不在 SW 侧长等待）；无 B站房间或关闭开关时同样 `close()` 关闭；**无 onRemoved 自动重开**（临时模式下 SW 主动关页，兜底重开会残留页面）
   - ADD_ROOM/REMOVE_ROOM、设置变更（SETTINGS_UPDATED，如切换观众数开关）后立即采样一次，不用等下一个 10 分钟周期
-- 观众数开关：设置页 `fetchViewerCount`（默认 true）控制是否获取房间观众数。关闭时 `biliBridge.sync()` 清除 `streamers` 中的 `vipCount`/`rankCount`、停用页面通道并关闭桥接标签页；无 B站房间时同样关闭桥接标签页但**不清 streamers**（斗鱼贵宾数仍有效，该分支有测试覆盖）；设置变更（`SETTINGS_UPDATED`）会触发重新同步，开关即时生效
+- 观众数开关（2026-08 按平台拆分）：设置页两个开关独立控制——`fetchDouyuViewerCount`（斗鱼贵宾数）/`fetchBilibiliViewerCount`（B站高能榜在线数），均默认 true；旧版总开关 `fetchViewerCount` 保留为读取回退（新字段未写入时生效），新版本保存设置时删除。关闭斗鱼开关 → background `pruneStaleViewerCounts` 清 `streamers` 的 `vipCount`；关闭 B站开关 → `biliBridge.sync()` 清 `rankCount`、停用页面通道并关闭桥接标签页；无 B站房间时同样关闭桥接标签页但**不清 streamers**（斗鱼贵宾数仍有效，该分支有测试覆盖）；设置变更（`SETTINGS_UPDATED`）经 `syncViewerSettings()`（biliBridge.sync + pruneStaleViewerCounts）触发重新同步，开关即时生效
 
 ## Gotchas
 
