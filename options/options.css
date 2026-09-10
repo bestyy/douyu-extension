@@ -321,7 +321,7 @@ input[type="number"]:focus,
   padding: 9px 4px;
   border-bottom: 0.5px solid var(--sep);
   transition: background 0.15s;
-  flex-wrap: wrap; /* 检测面板换到整行 */
+  flex-wrap: wrap; /* 通知设置面板换到整行 */
 }
 
 .room-item:last-child { border-bottom: none; }
@@ -409,8 +409,8 @@ input[type="number"]:focus,
   display: none;
 }
 
-/* ===== 弹幕检测面板（房间行内展开） ===== */
-.btn-watch {
+/* ===== 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测） ===== */
+.btn-notify {
   padding: 3px 10px;
   border: none;
   border-radius: 999px;
@@ -423,24 +423,24 @@ input[type="number"]:focus,
   transition: background 0.15s, color 0.15s;
 }
 
-.btn-watch:hover {
+.btn-notify:hover {
   background: #e8e8ed;
   color: var(--label);
 }
 
-.btn-watch.active {
+.btn-notify.active {
   background: #e8e8ed;
   color: var(--label);
 }
 
-/* 检测已生效（启用且配了检测词）时点亮 */
-.btn-watch.on {
+/* 该房有生效的通知配置（开播通知开启，或检测已启用且配了检测词）时点亮 */
+.btn-notify.on {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
 }
 
-.watch-panel {
+.notify-panel {
   flex-basis: 100%;
   display: flex;
   flex-direction: column;
@@ -451,12 +451,18 @@ input[type="number"]:focus,
   border-radius: 12px;
 }
 
-.watch-panel.hidden {
+.notify-panel.hidden {
   display: none;
 }
 
-.watch-panel .toggle-row {
+.notify-panel .toggle-row {
   font-size: 14px;
+}
+
+/* 面板内分组分隔线（面板已有内边距，不需要卡片分隔线的负外边距） */
+.panel-divider {
+  height: 0.5px;
+  background: var(--sep);
 }
 
 .watch-keywords {
@@ -512,13 +518,14 @@ input[type="number"]:focus,
   color: var(--label-3);
 }
 
-.watch-saved {
-  color: var(--green);
+/* 面板内「已保存」提示 */
+.panel-saved {
+  font-size: 11.5px;
   font-weight: 600;
-  margin-left: 4px;
+  color: var(--green);
 }
 
-.watch-saved.hidden {
+.panel-saved.hidden {
   display: none;
 }
 
@@ -542,42 +549,6 @@ input[type="number"]:focus,
 .platform-tag.bilibili {
   background: #e9f7fd;
   color: #00a1d6;
-}
-
-/* ===== 房间通知勾选框 ===== */
-.room-notify-cb {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 17px;
-  height: 17px;
-  border: 1.5px solid #c7c7cc;
-  border-radius: 5px;
-  outline: none;
-  cursor: pointer;
-  flex-shrink: 0;
-  position: relative;
-  transition: background 0.15s, border-color 0.15s;
-  margin: 0;
-  background: transparent;
-}
-
-.room-notify-cb:hover { border-color: var(--label-2); }
-
-.room-notify-cb:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.room-notify-cb:checked::after {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 2px;
-  width: 4px;
-  height: 8px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
 }
 
 /* ===== 拖拽排序 ===== */
