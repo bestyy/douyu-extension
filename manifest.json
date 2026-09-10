@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "斗鱼关注开播通知",
-  "description": "实时显示斗鱼关注主播的开播状态，点击跳转直播间",
+  "name": "直播通知",
+  "description": "实时显示直播关注主播的开播状态，点击跳转直播间",
   "version": "1.0.0",
   "action": {
     "default_popup": "popup/popup.html",
@@ -21,8 +21,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://live.bilibili.com/*"],
-      "js": ["lib/bilibili-barrage.js", "lib/bilibili-page-bridge.js"],
+      "matches": [
+        "https://live.bilibili.com/*"
+      ],
+      "js": [
+        "lib/bilibili-barrage.js",
+        "lib/bilibili-page-bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],
