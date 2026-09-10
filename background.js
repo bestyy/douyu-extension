@@ -25,7 +25,7 @@ const bilibiliBarrageClient = new BilibiliBarrageClient({
   onFallback: handleBiliChannelFallback
 });
 
-// === 弹幕检测长连接客户端（检测与采样短连并存，见 ADR-0005）===
+// === 弹幕检测长连接客户端（检测与采样短连并存，见 ADR-0001）===
 // 检测要求秒级实时性，复用 10 分钟采样短连没有意义；因此检测用独立实例保持长连接：
 // 斗鱼解析 chatmsg、B站解析 DANMU_MSG，弹幕文本统一扇入 handleDanmu。
 // 连接由开播门控（syncDanmakuWatch，挂在轮询收敛点）增删，下播即断开并清空计数。
@@ -254,7 +254,7 @@ async function syncViewerSettings() {
   await pruneStaleViewerCounts();
 }
 
-// === 弹幕检测（开播门控长连接，见 ADR-0005）===
+// === 弹幕检测（开播门控长连接，见 ADR-0001）===
 // 检测词命中在滑动窗口内达到阈值 → 发一条检测通知（派生 ID，按房间覆盖）→ 进冷却。
 // 计数与冷却是内存态（与检测长连接同生命周期）：下播断开即清空，SW 重启归零；
 // 盯守配置缓存同样在内存里，但 SW 唤醒时会按存储中的开播快照立即重建（见 watchReady）。
@@ -513,11 +513,11 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
       // 统计文案按平台区分：斗鱼显示贵宾数（弹幕推送），B站显示高能榜在线数（弹幕推送）
       const statText = streamer.platform === 'bilibili'
         ? (typeof streamer.rankCount === 'number' && streamer.rankCount > 0
-            ? `${formatNumber(streamer.rankCount)} 高能榜`
-            : '')
+          ? `${formatNumber(streamer.rankCount)} 高能榜`
+          : '')
         : (typeof streamer.vipCount === 'number' && streamer.vipCount > 0
-            ? `${formatNumber(streamer.vipCount)} 贵宾`
-            : '');
+          ? `${formatNumber(streamer.vipCount)} 贵宾`
+          : '');
       try {
         await chrome.notifications.create(compositeKey, {
           type: 'basic',
@@ -617,7 +617,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 检测长连接常驻在桥接页时不得关页（采样完成只结束采样，盯守继续）
     case 'BILI_SAMPLE_DONE':
       if (!hasBiliWatch()) {
-        biliBridge.close().catch(() => {});
+        biliBridge.close().catch(() => { });
       }
       sendResponse({ ok: true });
       return true;

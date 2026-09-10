@@ -140,17 +140,17 @@ test('selectWatchPlan：按房间列表顺序取前 5 个在线且启用的房�
   assert.equal(plan.active[0].config.threshold, WATCH_DEFAULTS.threshold, '计划条目带归一化配置');
 });
 
-test('selectWatchPlan：未开播 / 未配置 / 未启用 / 空检测词 / 抖音房间都不进计划', () => {
+test('selectWatchPlan：未开播 / 未配置 / 未启用 / 空检测词 / 无弹幕通道平台都不进计划', () => {
   const rooms = [
     room(1, ON({})),                       // 在线且启用 → 盯
     room(2, ON({})),                       // 未开播 → 不盯
     room(3, null),                         // 无检测配置 → 不盯
     room(4, { enabled: false, keywords: ['上车'] }), // 开关关闭 → 不盯
     room(5, ON({ keywords: [' ', ''] })),  // 检测词为空 → 不盯
-    room(6, ON({}), 'douyin')              // 抖音无弹幕通道 → 不盯
+    room(6, ON({}), 'other')               // 无弹幕通道的平台 → 不盯
   ];
   // 除 2 号外都在线
-  const onlineKeys = new Set(['douyu_1', 'douyu_3', 'douyu_4', 'douyu_5', 'douyin_6']);
+  const onlineKeys = new Set(['douyu_1', 'douyu_3', 'douyu_4', 'douyu_5', 'other_6']);
 
   const plan = selectWatchPlan(rooms, onlineKeys);
 
