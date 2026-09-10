@@ -45,6 +45,9 @@ async function loadData() {
     const data = await chrome.storage.local.get(null);
     document.getElementById('loading').classList.add('hidden');
 
+    // 弹幕检测排队提示：并发上限已满时，超出的开播房间暂未被盯着
+    renderWatchQueue(data.watchQueued);
+
     // 房间号检查
     const rooms = data.rooms;
 
@@ -89,6 +92,19 @@ async function loadData() {
 function updateMeter(count) {
   const el = document.getElementById('monitor');
   el.dataset.lit = count >= 10 ? '4' : count >= 6 ? '3' : count >= 3 ? '2' : count >= 1 ? '1' : '0';
+}
+
+// 弹幕检测排队提示（watchQueued 由轮询收敛点写入）：列出暂未盯守的房间昵称
+function renderWatchQueue(queued) {
+  const hint = document.getElementById('watchQueueHint');
+  const list = queued || [];
+  if (list.length === 0) {
+    hint.classList.add('hidden');
+    return;
+  }
+  const names = list.map(q => q.nickname || q.roomId).join('、');
+  hint.textContent = `弹幕检测已满（同时最多 ${WATCH_MAX_CONCURRENT} 个开播房间），排队中：${names}`;
+  hint.classList.remove('hidden');
 }
 
 function renderStreamerList(container, streamers) {

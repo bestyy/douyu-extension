@@ -133,6 +133,7 @@ const BILI_CARD_OK = {
 function loadBackground(chrome, fetchStub) {
   const libs = [
     'lib/storage.js',
+    'lib/danmaku-watch.js',
     'lib/douyu-api.js',
     'lib/bilibili-api.js',
     'lib/douyu-barrage.js',

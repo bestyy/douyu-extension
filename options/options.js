@@ -61,6 +61,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? '<span class="platform-tag bilibili">B站</span>'
         : '<span class="platform-tag douyu">斗鱼</span>';
       const checkedAttr = r.notify === true ? 'checked' : '';
+      // 弹幕检测（抖音无弹幕通道，不提供入口）
+      const watchEntry = WATCH_PLATFORMS.includes(r.platform)
+        ? `<button class="btn-watch${normalizeWatch(r.watch) ? ' on' : ''}" title="弹幕检测设置">检测</button>`
+        : '';
+      const watchPanel = WATCH_PLATFORMS.includes(r.platform) ? renderWatchPanel(r.watch) : '';
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
           <input type="checkbox" class="room-notify-cb" title="开播通知" ${checkedAttr}>
@@ -69,7 +74,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           ${platformLabel}
           <span class="room-id">${r.roomId}</span>
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
+          ${watchEntry}
           <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
+          ${watchPanel}
         </div>
       `;
     }).join('');
@@ -104,6 +111,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         await chrome.storage.local.set({ rooms: updatedRooms });
       });
+    });
+
+    // 弹幕检测面板：展开/收起（昵称后的入口按钮，面板占整行）
+    document.querySelectorAll('.btn-watch').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const panel = btn.closest('.room-item').querySelector('.watch-panel');
+        panel.classList.toggle('hidden');
+        btn.classList.toggle('active', !panel.classList.contains('hidden'));
+      });
+    });
+
+    // 面板内任一控件改动即保存（配完即用，不用跳页面）
+    document.querySelectorAll('.watch-panel').forEach(panel => {
+      panel.addEventListener('change', () => saveWatchPanel(panel));
     });
 
     // 初始化拖拽排序
@@ -367,6 +389,81 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// === 弹幕检测面板（房间行内展开）===
+// storage 存用户意图（启用开关 + 检测词 + 阈值/窗口/冷却），归一化在读写两侧都做：
+// 读用 lib/danmaku-watch.js 的 normalizeWatch（未启用/无检测词视为未配置），
+// 写用同一套归一化后再落盘，用户能直接看到自己的输入被如何处理。
+
+/** 渲染某房间的检测面板（无配置时用缺省值，开关默认关闭） */
+function renderWatchPanel(watch) {
+  const enabled = watch?.enabled === true;
+  const keywords = normalizeKeywords(watch?.keywords).join('\n');
+  const limits = normalizeWatchLimits(watch || {});
+  return `
+    <div class="watch-panel hidden">
+      <label class="toggle-row">
+        <span>启用弹幕检测</span>
+        <input type="checkbox" class="watch-enabled" ${enabled ? 'checked' : ''}>
+      </label>
+      <textarea class="watch-keywords" rows="3" spellcheck="false" placeholder="检测词，一行一个（最多 ${WATCH_MAX_KEYWORDS} 个，每个最多 ${WATCH_MAX_KEYWORD_LENGTH} 字）">${escapeHtml(keywords)}</textarea>
+      <div class="watch-nums">
+        <label class="watch-num">触发阈值 <input type="number" class="watch-threshold" min="${WATCH_LIMITS.threshold[0]}" max="${WATCH_LIMITS.threshold[1]}" value="${limits.threshold}"> 次</label>
+        <label class="watch-num">窗口 <input type="number" class="watch-window" min="${WATCH_LIMITS.windowMinutes[0]}" max="${WATCH_LIMITS.windowMinutes[1]}" value="${limits.windowMinutes}"> 分钟</label>
+        <label class="watch-num">冷却 <input type="number" class="watch-cooldown" min="${WATCH_LIMITS.cooldownMinutes[0]}" max="${WATCH_LIMITS.cooldownMinutes[1]}" value="${limits.cooldownMinutes}"> 分钟</label>
+      </div>
+      <p class="watch-hint">开播时自动盯该房弹幕：窗口内命中数达到阈值就发一条通知，之后进入冷却。子串匹配、不区分大小写；冷却 0 表示本场只报一次。<span class="watch-saved hidden">已保存</span></p>
+    </div>
+  `;
+}
+
+const watchSavedTimers = new WeakMap();
+
+/** 面板内「已保存」提示（短暂显示后自动隐藏） */
+function showWatchSaved(panel) {
+  const tip = panel.querySelector('.watch-saved');
+  tip.classList.remove('hidden');
+  clearTimeout(watchSavedTimers.get(panel));
+  watchSavedTimers.set(panel, setTimeout(() => tip.classList.add('hidden'), 1500));
+}
+
+/** 保存某房间的检测配置：归一化后写回表单与 storage，并让 background 立即收敛检测长连接 */
+async function saveWatchPanel(panel) {
+  const roomItem = panel.closest('.room-item');
+  const roomId = roomItem.dataset.roomId;
+  const platform = roomItem.dataset.platform || 'douyu';
+
+  const keywordInput = panel.querySelector('.watch-keywords');
+  const thresholdInput = panel.querySelector('.watch-threshold');
+  const windowInput = panel.querySelector('.watch-window');
+  const cooldownInput = panel.querySelector('.watch-cooldown');
+
+  const watch = {
+    enabled: panel.querySelector('.watch-enabled').checked,
+    keywords: normalizeKeywords(keywordInput.value),
+    // 数值归一化复用 lib/danmaku-watch.js（与读取侧同一套区间与缺省值）
+    ...normalizeWatchLimits({
+      threshold: thresholdInput.value,
+      windowMinutes: windowInput.value,
+      cooldownMinutes: cooldownInput.value
+    })
+  };
+  // 回写实际生效值（去空行/去重/截断/钳制后的结果）
+  keywordInput.value = watch.keywords.join('\n');
+  thresholdInput.value = watch.threshold;
+  windowInput.value = watch.windowMinutes;
+  cooldownInput.value = watch.cooldownMinutes;
+
+  const { rooms = [] } = await chrome.storage.local.get('rooms');
+  await chrome.storage.local.set({
+    rooms: rooms.map(r => (r.roomId === roomId && r.platform === platform) ? { ...r, watch } : r)
+  });
+
+  // 入口按钮高亮 = 该房检测真正生效（已启用且至少有一个检测词）
+  roomItem.querySelector('.btn-watch').classList.toggle('on', !!normalizeWatch(watch));
+  chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });
+  showWatchSaved(panel);
 }
 
 // 观众数平台开关读取：新字段（fetchDouyuViewerCount / fetchBilibiliViewerCount）优先，

@@ -1,6 +1,7 @@
 // background.js — Service Worker
 
 importScripts('lib/storage.js');
+importScripts('lib/danmaku-watch.js');
 importScripts('lib/douyu-api.js');
 importScripts('lib/bilibili-api.js');
 importScripts('lib/douyu-barrage.js');
@@ -22,6 +23,19 @@ const barrageClient = new BarrageClient({
 const bilibiliBarrageClient = new BilibiliBarrageClient({
   onRankCount: updateRankCount,
   onFallback: handleBiliChannelFallback
+});
+
+// === 弹幕检测长连接客户端（检测与采样短连并存，见 ADR-0005）===
+// 检测要求秒级实时性，复用 10 分钟采样短连没有意义；因此检测用独立实例保持长连接：
+// 斗鱼解析 chatmsg、B站解析 DANMU_MSG，弹幕文本统一扇入 handleDanmu。
+// 连接由开播门控（syncDanmakuWatch，挂在轮询收敛点）增删，下播即断开并清空计数。
+const douyuWatchClient = new BarrageClient({
+  onDanmu: data => handleDanmu('douyu', data)
+});
+
+// 未登录时 B站检测走 SW 直连（登录态下由桥接页建连，弹幕经 BILI_DANMU 消息回传）
+const bilibiliWatchClient = new BilibiliBarrageClient({
+  onDanmu: data => handleDanmu('bilibili', data)
 });
 
 // === B站页面桥接通道（深 module） ===
@@ -65,8 +79,15 @@ async function isBiliLoggedIn() {
   }
 }
 
-// Service Worker 每次唤醒时同步弹幕客户端状态（观众数开关 / B站页面通道）
-syncViewerSettings();
+// Service Worker 每次唤醒时重建内存态：观众数/B站通道状态（syncViewerSettings）
+// 与检测盯守配置缓存（syncDanmakuWatch）。检测配置与计数都在内存里，SW 被回收即丢，
+// 因此弹幕入口（handleDanmu）先等这一次重建，避免唤醒后首批弹幕被当成未盯守房间丢弃。
+const watchReady = (async () => {
+  await syncViewerSettings();
+  await syncDanmakuWatch();
+})().catch(e => {
+  console.error('检测盯守初始化失败:', e);
+});
 
 // 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
 async function updateVipCount({ roomId, vipCount }) {
@@ -223,14 +244,151 @@ async function pruneStaleViewerCounts() {
 // 观众数设置同步入口：B站页面通道决策（biliBridge.sync）+ 按开关清理过期观众数字段。
 // biliBridge 只负责 B站相关状态；斗鱼字段（vipCount）清理由本入口统一处理
 async function syncViewerSettings() {
-  await biliBridge.sync();
+  // 检测需求并入 B站通道决策：只开了弹幕检测（未开观众数）的房间一样需要 B站弹幕通道
+  const rooms = (await StorageHelper.get('rooms')) || [];
+  await biliBridge.sync({ danmakuWatch: hasConfiguredBiliWatch(rooms) });
   await pruneStaleViewerCounts();
+}
+
+// === 弹幕检测（开播门控长连接，见 ADR-0005）===
+// 检测词命中在滑动窗口内达到阈值 → 发一条检测通知（派生 ID，按房间覆盖）→ 进冷却。
+// 计数与冷却是内存态（与检测长连接同生命周期）：下播断开即清空，SW 重启归零；
+// 盯守配置缓存同样在内存里，但 SW 唤醒时会按存储中的开播快照立即重建（见 watchReady）。
+const WATCH_NOTIFICATION_SUFFIX = '_watch'; // 检测通知 ID 后缀（与开播通知互不覆盖）
+const watchCounter = new DanmakuWatchCounter();
+const watchedConfigs = new Map(); // 房间复合键 -> { key, platform, roomId, nickname, config }（每轮轮询重建）
+let watchedKeys = new Set();      // 上一轮盯守的房间复合键（用于识别下播/停用边沿）
+
+/**
+ * 弹幕检测的轮询收敛点（写回开播快照之后调用，添加/移除房间同样经此入口）：
+ * - 按房间列表顺序取前 5 个「在线且已配置检测」的房间为盯守对象，其余在线房间排队
+ * - 连接按盯守集合幂等收敛：开播建长连接、下播断开（SW 被回收后同样由这里重连）
+ * - 下播/停用边沿清空该房计数（含冷却与锁定）
+ */
+async function syncDanmakuWatch() {
+  const [roomsRaw, streamersRaw] = await Promise.all([
+    StorageHelper.get('rooms'),
+    StorageHelper.get('streamers')
+  ]);
+  const onlineKeys = new Set(
+    (streamersRaw || []).filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
+  );
+  const plan = selectWatchPlan(roomsRaw || [], onlineKeys);
+
+  // 下播/停用边沿：清空计数与冷却（下一场重新计数，冷却 0 的锁定同时解除）
+  const nextKeys = new Set(plan.active.map(e => e.key));
+  for (const key of watchedKeys) {
+    if (!nextKeys.has(key)) {
+      watchCounter.reset(key);
+    }
+  }
+  const hadBiliWatch = [...watchedConfigs.values()].some(e => e.platform === 'bilibili');
+  watchedKeys = nextKeys;
+  watchedConfigs.clear();
+  for (const entry of plan.active) {
+    watchedConfigs.set(entry.key, entry);
+  }
+
+  // 斗鱼：检测长连接独立实例（与采样短连并存，属有意设计）
+  douyuWatchClient.setRooms(plan.active.filter(e => e.platform === 'douyu').map(e => e.roomId));
+
+  // B站：通道决策沿用观众数封装（登录态页面桥接 / 未登录 SW 直连）
+  const biliIds = plan.active.filter(e => e.platform === 'bilibili').map(e => e.roomId);
+  if (biliBridge.enabled) {
+    // 全量下发（含空列表）：桥接页按最新列表收敛，SW 重启后内存态丢失也能清掉残留连接
+    await biliBridge.watch(biliIds);
+    if (biliIds.length === 0 && hadBiliWatch) {
+      await biliBridge.close(); // 本 SW 生命周期内的盯守结束：释放常驻桥接页（采样会按需再开）
+    }
+    bilibiliWatchClient.setRooms([]); // 页面通道启用时不留 SW 直连检测连接
+  } else {
+    bilibiliWatchClient.setRooms(biliIds);
+  }
+
+  await syncWatchQueue(plan.queued);
+}
+
+// 排队提示（popup 读取）：超过并发上限暂未盯守的在线房间，仅在变化时写入
+async function syncWatchQueue(queued) {
+  const next = queued.map(e => ({ roomId: e.roomId, platform: e.platform, nickname: e.nickname }));
+  const prev = (await StorageHelper.get('watchQueued')) || [];
+  if (JSON.stringify(prev) !== JSON.stringify(next)) {
+    await StorageHelper.set('watchQueued', next);
+  }
+}
+
+/** 当前是否有 B站房间在盯守（桥接页检测长连接常驻期间不得被采样收尾关页） */
+function hasBiliWatch() {
+  for (const entry of watchedConfigs.values()) {
+    if (entry.platform === 'bilibili') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 弹幕文本入口：两个平台的检测长连接与桥接页回传都收敛到这里。
+ * 命中检测词 → 窗口计数 → 达阈值发检测通知（未在盯守的房间直接忽略）
+ */
+async function handleDanmu(platform, { roomId, text, user }) {
+  await watchReady; // SW 唤醒后先等内存里的盯守配置重建完成
+  const key = `${platform}_${roomId}`;
+  const entry = watchedConfigs.get(key);
+  if (!entry) {
+    return;
+  }
+  const keyword = matchKeyword(text, entry.config);
+  if (!keyword) {
+    return;
+  }
+  const { triggered, count } = watchCounter.recordHit(key, entry.config);
+  if (!triggered) {
+    return;
+  }
+  await notifyDanmakuHit(entry, { keyword, text, user, count });
+}
+
+/**
+ * 检测通知：ID 为派生 ID（房间复合键 + _watch 后缀），与开播通知并存、同一房间重复触发
+ * 复用同一 ID → 通知中心覆盖而非堆积；点击进入直播间（沿用开播通知行为，
+ * ID 解析见 getLiveUrlFromNotificationId）。
+ * 不受开播通知总开关（settings.notificationsEnabled）影响：检测有独立的启用开关与检测词配置，
+ * 开了检测就是要这条通知。
+ */
+async function notifyDanmakuHit(entry, { keyword, text, user, count }) {
+  const body = user ? `${user}：${truncateDanmu(text)}` : truncateDanmu(text);
+  try {
+    await chrome.notifications.create(`${entry.key}${WATCH_NOTIFICATION_SUFFIX}`, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: `${platformLabel(entry.platform)} ${entry.nickname} 弹幕命中！`,
+      message: body,
+      contextMessage: `${entry.config.windowMinutes} 分钟内「${keyword}」命中 ${count} 次`,
+      buttons: [{ title: '进入直播间' }],
+      priority: 2
+    });
+  } catch (e) {
+    console.error('检测通知创建失败:', e);
+  }
+}
+
+/** 通知标题的平台前缀（与 popup / 设置页的平台标签一致） */
+function platformLabel(platform) {
+  return platform === 'bilibili' ? '[B站]' : '[斗鱼]';
+}
+
+/** 通知正文里的弹幕文本截断（过长会被系统截断成不可读） */
+function truncateDanmu(text) {
+  const str = String(text || '');
+  return str.length > 60 ? `${str.slice(0, 60)}…` : str;
 }
 
 // === 核心轮询逻辑 ===
 async function refreshRooms() {
   const rooms = await StorageHelper.get('rooms');
   if (!rooms || rooms.length === 0) {
+    await syncDanmakuWatch(); // 房间清空 → 断开全部检测连接
     return; // 未配置房间号，跳过
   }
 
@@ -289,6 +447,7 @@ async function refreshRooms() {
   }
 
   if (mergedData.length === 0) {
+    await syncDanmakuWatch();
     return;
   }
 
@@ -298,6 +457,9 @@ async function refreshRooms() {
   const onlineCount = mergedData.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#FF4400' });
+
+  // 开播门控：按刚写回的开播快照收敛检测长连接（开播建连、下播断开并清空计数）
+  await syncDanmakuWatch();
 
   const isFirstRun = (await StorageHelper.get('_firstRun')) === true;
   if (isFirstRun) {
@@ -339,7 +501,7 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
     const alreadyNotified = notifiedMap.has(compositeKey);
 
     if (isNewlyLive && !alreadyNotified) {
-      const platformPrefix = streamer.platform === 'bilibili' ? '[B站]' : '[斗鱼]';
+      const platformPrefix = platformLabel(streamer.platform);
       // 统计文案按平台区分：斗鱼显示贵宾数（弹幕推送），B站显示高能榜在线数（弹幕推送）
       const statText = streamer.platform === 'bilibili'
         ? (typeof streamer.rankCount === 'number' && streamer.rankCount > 0
@@ -389,8 +551,13 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   if (url) chrome.tabs.create({ url });
 });
 
+// 检测通知 ID 后缀：开播通知为 `platform_roomId`，检测通知为派生的 `platform_roomId_watch`
+// （房间号恒为纯数字，去掉后缀后复用同一套 URL 规则）
 function getLiveUrlFromNotificationId(notificationId) {
-  const [platform, ...rest] = notificationId.split('_');
+  const baseId = notificationId.endsWith(WATCH_NOTIFICATION_SUFFIX)
+    ? notificationId.slice(0, -WATCH_NOTIFICATION_SUFFIX.length)
+    : notificationId;
+  const [platform, ...rest] = baseId.split('_');
   const roomId = rest.join('_');
   if (platform === 'bilibili') {
     return `https://live.bilibili.com/${roomId}`;
@@ -425,10 +592,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(() => sendResponse({ ok: true }));
       return true;
 
+    // 页面通道（content script）回传的弹幕文本 → 检测计数
+    case 'BILI_DANMU':
+      handleDanmu('bilibili', { roomId: message.roomId, text: message.text, user: message.user })
+        .then(() => sendResponse({ ok: true }));
+      return true;
+
+    // 房间检测配置变更（设置页行内面板）→ 先重做通道决策（B站页面桥接 / SW 直连），
+    // 再按最新配置收敛盯守连接：只开检测、观众数开关关闭时也要走对通道
+    case 'WATCH_CONFIG_UPDATED':
+      syncViewerSettings().then(() => syncDanmakuWatch()).then(() => sendResponse({ ok: true }));
+      return true;
+
     // 桥接页本轮采样完成/超时 → 关闭桥接标签页（消息事件可靠唤醒休眠中的 SW，
-    // 避免采样流程在 SW 侧长时间等待导致空闲被终止）
+    // 避免采样流程在 SW 侧长时间等待导致空闲被终止）；
+    // 检测长连接常驻在桥接页时不得关页（采样完成只结束采样，盯守继续）
     case 'BILI_SAMPLE_DONE':
-      biliBridge.close().catch(() => {});
+      if (!hasBiliWatch()) {
+        biliBridge.close().catch(() => {});
+      }
       sendResponse({ ok: true });
       return true;
 
@@ -502,6 +684,9 @@ async function handleRemoveRoom(roomId, platform) {
   // Update badge
   const onlineCount = streamers.filter(s => s.online).length;
   chrome.action.setBadgeText({ text: onlineCount > 0 ? String(onlineCount) : '' });
+
+  // 移除房间后重新收敛检测连接（该房若在盯守则断开并清空计数）
+  await syncDanmakuWatch();
 
   await syncViewerSettings();
   // 移除房间后立即采样，刷新剩余房间的观众数

@@ -37,7 +37,7 @@
       <div class="cell-divider"></div>
       <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
     </section>
-    <p class="group-hint">添加要监控的直播间房间号</p>
+    <p class="group-hint">添加要监控的房间号。房间行内可展开「弹幕检测」：开播时自动盯弹幕，检测词在窗口内达到阈值就通知（斗鱼 / B站 支持，抖音暂不支持）</p>
 
     <h2 class="group-title">刷新设置</h2>
     <section class="card">
@@ -74,6 +74,7 @@
     <p class="group-hint">两个开关独立控制，关闭后停止对应平台的观众数采样（每 10 分钟更新一次）</p>
   </div>
 
+  <script src="../lib/danmaku-watch.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

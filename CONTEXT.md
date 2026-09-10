@@ -37,8 +37,8 @@ _Avoid_: 观众数（高能榜是 B站特有指标）
 _Avoid_: 在线人数（语义不同）
 
 **采样 (sample)**:
-每 10 分钟由 `chrome.alarms` 驱动的一次短连接弹幕 WebSocket 会话：连接 → 收到目标数据 → 立即断开。平时不保持任何 WS 连接。
-_Avoid_: 长连接（长连接仅 B站页面桥接通道内部使用）
+每 10 分钟由 `chrome.alarms` 驱动的一次短连接弹幕 WebSocket 会话：连接 → 收到目标数据 → 立即断开。采样自身不保持连接。
+_Avoid_: 长连接（长连接属于弹幕检测的检测长连接，见 ADR-0005）
 
 **开播通知 (notification)**:
 新开播时发送的桌面通知，格式 `[平台] 昵称 开播了！`。按房间可单独关闭（`rooms[].notify`）。
@@ -49,7 +49,7 @@ B站弹幕采样的传输方式，取值 `SW 直连` 或 `页面桥接`。登录
 _Avoid_: 平台、渠道
 
 **弹幕客户端 (barrage client)**:
-与平台弹幕服务器建 WebSocket 连接的采样客户端（`BarrageClient` / `BilibiliBarrageClient`），解析特定消息类型（`oni` / `ONLINE_RANK_COUNT`）回调观众数字段。
+与平台弹幕服务器建 WebSocket 连接的客户端（`BarrageClient` / `BilibiliBarrageClient`）：采样模式解析 `oni` / `ONLINE_RANK_COUNT` 回调观众数字段，检测模式解析 `chatmsg` / `DANMU_MSG` 回调弹幕文本。两种模式各用独立实例（采样短连与检测长连接并存，见 ADR-0005）。
 _Avoid_: WS 客户端（弹幕客户端是领域概念，WS 是技术细节）
 
 **抖音签名 (a_bogus)**:

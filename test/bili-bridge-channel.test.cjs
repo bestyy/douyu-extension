@@ -206,6 +206,44 @@ test('sync：未登录无标记 + 残留桥接页 → 停用通道并清理页�
   assert.equal(tabs.tabs.length, 0, '残留桥接页应被关闭');
 });
 
+test('watch：有现有页 → 下发盯守列表（不等待完成信号、不关页）', async () => {
+  const storage = createFakeStorage({
+    settings: { ...DEFAULT_SETTINGS },
+    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }]
+  });
+  const tabs = createFakeTabs();
+  const existing = tabs.addTab(BRIDGE_URL, { respond: () => ({ ok: true }) });
+
+  const ch = makeChannel(storage, tabs);
+  await ch.watch(['1', '2']);
+
+  assert.equal(tabs.calls.create, 0, '复用现有页');
+  const msg = tabs.calls.sendMessage.find(c => c.msg.type === 'BILI_WATCH_ROOMS');
+  assert.ok(msg, '应发送 BILI_WATCH_ROOMS');
+  assert.deepEqual(msg.msg.roomIds, ['1', '2']);
+  assert.equal(msg.id, existing.id);
+  assert.deepEqual(tabs.calls.remove, [], '盯守期间不关页');
+});
+
+test('watch：空列表 → 清掉残留检测连接，但不为此开页', async () => {
+  const storage = createFakeStorage({ settings: { ...DEFAULT_SETTINGS } });
+  const tabs = createFakeTabs();
+  const existing = tabs.addTab(BRIDGE_URL, { respond: () => ({ ok: true }) });
+
+  const ch = makeChannel(storage, tabs);
+  await ch.watch([]);
+
+  const msg = tabs.calls.sendMessage.find(c => c.msg.type === 'BILI_WATCH_ROOMS');
+  assert.deepEqual(msg?.msg.roomIds, [], '应向现有页下发空列表');
+
+  // 没有桥接页时不开页（轮询每轮都会下发空列表）
+  const tabs2 = createFakeTabs();
+  const ch2 = makeChannel(storage, tabs2);
+  await ch2.watch([]);
+  assert.equal(tabs2.calls.create, 0, '没有桥接页时不应创建');
+  assert.equal(tabs2.calls.sendMessage.length, 0);
+});
+
 test('sample：无现有页 → 创建一次并驱动采样', async () => {
   const storage = createFakeStorage({
     settings: { ...DEFAULT_SETTINGS },

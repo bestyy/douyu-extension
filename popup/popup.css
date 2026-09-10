@@ -292,6 +292,16 @@ header h1 {
   color: #00a1d6;
 }
 
+/* ===== 弹幕检测排队提示 ===== */
+#watchQueueHint {
+  padding: 8px 16px;
+  background: var(--accent-soft);
+  border-top: 0.5px solid var(--sep);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #b33000;
+}
+
 /* ===== 选项栏 ===== */
 #optionsBar {
   display: flex;
