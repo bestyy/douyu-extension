@@ -244,9 +244,13 @@ async function pruneStaleViewerCounts() {
 // 观众数设置同步入口：B站页面通道决策（biliBridge.sync）+ 按开关清理过期观众数字段。
 // biliBridge 只负责 B站相关状态；斗鱼字段（vipCount）清理由本入口统一处理
 async function syncViewerSettings() {
-  // 检测需求并入 B站通道决策：只开了弹幕检测（未开观众数）的房间一样需要 B站弹幕通道
-  const rooms = (await StorageHelper.get('rooms')) || [];
-  await biliBridge.sync({ danmakuWatch: hasConfiguredBiliWatch(rooms) });
+  // 检测需求并入 B站通道决策：只开了弹幕检测（未开观众数）的房间一样需要 B站弹幕通道；
+  // 检测总开关关闭时不算检测需求（不再为盯守常驻桥接页）
+  const [rooms, settings] = await Promise.all([
+    StorageHelper.get('rooms'),
+    StorageHelper.get('settings')
+  ]);
+  await biliBridge.sync({ danmakuWatch: hasConfiguredBiliWatch(rooms || [], isDanmakuWatchEnabled(settings)) });
   await pruneStaleViewerCounts();
 }
 
@@ -266,14 +270,18 @@ let watchedKeys = new Set();      // 上一轮盯守的房间复合键（用于�
  * - 下播/停用边沿清空该房计数（含冷却与锁定）
  */
 async function syncDanmakuWatch() {
-  const [roomsRaw, streamersRaw] = await Promise.all([
+  const [roomsRaw, streamersRaw, settings] = await Promise.all([
     StorageHelper.get('rooms'),
-    StorageHelper.get('streamers')
+    StorageHelper.get('streamers'),
+    StorageHelper.get('settings')
   ]);
   const onlineKeys = new Set(
     (streamersRaw || []).filter(s => s.online).map(s => `${s.platform}_${s.roomId}`)
   );
-  const plan = selectWatchPlan(roomsRaw || [], onlineKeys);
+  // 总开关关闭 → 空计划：连接收敛为 0、排队清空、计数按边沿清空（各房配好的检测词仍留在存储里）
+  const plan = selectWatchPlan(roomsRaw || [], onlineKeys, {
+    enabled: isDanmakuWatchEnabled(settings)
+  });
 
   // 下播/停用边沿：清空计数与冷却（下一场重新计数，冷却 0 的锁定同时解除）
   const nextKeys = new Set(plan.active.map(e => e.key));

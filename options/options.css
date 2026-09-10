@@ -518,6 +518,12 @@ input[type="number"]:focus,
   color: var(--label-3);
 }
 
+/* 弹幕检测总开关关闭：该房检测配置暂不生效 */
+.watch-hint.master-off {
+  color: var(--accent);
+  font-weight: 500;
+}
+
 /* 面板内「已保存」提示 */
 .panel-saved {
   font-size: 11.5px;

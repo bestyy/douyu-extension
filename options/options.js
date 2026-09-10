@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const addStatus = document.getElementById('addStatus');
   const refreshInterval = document.getElementById('refreshInterval');
   const notificationsEnabled = document.getElementById('notificationsEnabled');
+  const danmakuWatchEnabled = document.getElementById('danmakuWatchEnabled');
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
   // 加载现有设置
@@ -20,6 +21,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (data.settings?.notificationsEnabled !== undefined) {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
   }
+  danmakuWatchEnabled.checked = isDanmakuWatchEnabled(data.settings);
   // 观众数开关（v1.x 起按平台拆分）：新字段优先，未写入时回退旧总开关 fetchViewerCount 语义
   fetchDouyuViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchDouyuViewerCount');
   fetchBilibiliViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchBilibiliViewerCount');
@@ -69,7 +71,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
           <button class="btn-notify${roomNotifyActive(r) ? ' on' : ''}" title="该房间的通知设置">通知设置</button>
           <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
-          ${renderNotifyPanel(r)}
+          ${renderNotifyPanel(r, danmakuWatchEnabled.checked)}
         </div>
       `;
     }).join('');
@@ -158,6 +160,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       ...(data.settings || {}),
       refreshInterval: interval,
       notificationsEnabled: notificationsEnabled.checked,
+      danmakuWatchEnabled: danmakuWatchEnabled.checked,
       fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
       fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
     };
@@ -173,6 +176,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settings = data.settings || {};
     settings.notificationsEnabled = notificationsEnabled.checked;
     await chrome.storage.local.set({ settings });
+  });
+
+  // 弹幕检测总开关：即时生效（background 断开会话并清空排队），并重绘房间列表面板内的失效提示
+  danmakuWatchEnabled.addEventListener('change', async () => {
+    const data = await chrome.storage.local.get('settings');
+    const settings = { ...(data.settings || {}), danmakuWatchEnabled: danmakuWatchEnabled.checked };
+    await chrome.storage.local.set({ settings });
+    await renderRoomList();
+    chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });
   });
 
   // 观众数开关：即时生效（通知 background 同步弹幕客户端连接）
@@ -375,10 +387,14 @@ function roomNotifyActive(room) {
   return room.notify === true || !!normalizeWatch(room.watch);
 }
 
-/** 渲染某房间的通知设置面板（开播通知默认关闭；检测无配置时用缺省值） */
-function renderNotifyPanel(room) {
+/**
+ * 渲染某房间的通知设置面板（开播通知默认关闭；检测无配置时用缺省值）
+ * @param {object} room 存储中的房间对象
+ * @param {boolean} watchEnabled 弹幕检测总开关（关闭时面板内提示该房检测暂不生效）
+ */
+function renderNotifyPanel(room, watchEnabled = true) {
   const watchBlock = WATCH_PLATFORMS.includes(room.platform)
-    ? renderWatchBlock(room.watch)
+    ? renderWatchBlock(room.watch, watchEnabled)
     : `
       <div class="panel-divider"></div>
       <p class="watch-hint">该平台暂不支持弹幕检测（需要平台弹幕通道，目前仅斗鱼 / B站 支持）</p>`;
@@ -394,11 +410,18 @@ function renderNotifyPanel(room) {
   `;
 }
 
-/** 弹幕检测配置块（启用开关 + 检测词 + 阈值/窗口/冷却） */
-function renderWatchBlock(watch) {
+/**
+ * 弹幕检测配置块（启用开关 + 检测词 + 阈值/窗口/冷却）
+ * @param {object} watch rooms[].watch
+ * @param {boolean} watchEnabled 总开关（关闭且该房已启用检测时提示配置暂不生效）
+ */
+function renderWatchBlock(watch, watchEnabled = true) {
   const enabled = watch?.enabled === true;
   const keywords = normalizeKeywords(watch?.keywords).join('\n');
   const limits = normalizeWatchLimits(watch || {});
+  const masterOffHint = enabled && !watchEnabled
+    ? '<p class="watch-hint master-off">弹幕检测总开关已关闭，该房配置暂不生效（在下方「弹幕检测（全部房间）」重新打开）</p>'
+    : '';
   return `
       <div class="panel-divider"></div>
       <label class="toggle-row">
@@ -412,6 +435,7 @@ function renderWatchBlock(watch) {
         <label class="watch-num">冷却 <input type="number" class="watch-cooldown" min="${WATCH_LIMITS.cooldownMinutes[0]}" max="${WATCH_LIMITS.cooldownMinutes[1]}" value="${limits.cooldownMinutes}"> 分钟</label>
       </div>
       <p class="watch-hint">开播时自动盯该房弹幕：窗口内命中数达到阈值就发一条通知，之后进入冷却。子串匹配、不区分大小写；冷却 0 表示本场只报一次。</p>
+      ${masterOffHint}
   `;
 }
 

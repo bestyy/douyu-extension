@@ -12,8 +12,10 @@ const {
   WATCH_DEFAULTS,
   WATCH_MAX_CONCURRENT,
   normalizeWatch,
+  isDanmakuWatchEnabled,
   matchKeyword,
   selectWatchPlan,
+  hasConfiguredBiliWatch,
   DanmakuWatchCounter
 } = require('../lib/danmaku-watch.js');
 
@@ -183,6 +185,35 @@ test('selectWatchPlan：跨平台按房间列表顺序统一排队', () => {
   const plan = selectWatchPlan(rooms, onlineKeys);
 
   assert.deepEqual(plan.active.map(e => e.key), ['douyu_1', 'bilibili_200', 'douyu_2', 'bilibili_201']);
+});
+
+// === 弹幕检测总开关 ===
+
+test('isDanmakuWatchEnabled：默认开启，仅显式 false 视为关闭（旧版本无该字段）', () => {
+  assert.equal(isDanmakuWatchEnabled(undefined), true, '无 settings');
+  assert.equal(isDanmakuWatchEnabled({}), true, '无字段');
+  assert.equal(isDanmakuWatchEnabled({ danmakuWatchEnabled: true }), true);
+  assert.equal(isDanmakuWatchEnabled({ danmakuWatchEnabled: false }), false);
+});
+
+test('selectWatchPlan：总开关关闭时不盯守也不排队（房间配置照旧）', () => {
+  const rooms = [1, 2, 3, 4, 5, 6].map(i => room(i, ON({})));
+  const onlineKeys = new Set(rooms.map(r => `douyu_${r.roomId}`));
+
+  const on = selectWatchPlan(rooms, onlineKeys);
+  assert.equal(on.active.length, 5, '开启时照常盯守');
+  assert.equal(on.queued.length, 1, '开启时超出上限的房间排队');
+
+  const off = selectWatchPlan(rooms, onlineKeys, { enabled: false });
+  assert.deepEqual(off.active, [], '关闭时不盯守');
+  assert.deepEqual(off.queued, [], '关闭时也不排队（排队提示随之消失）');
+});
+
+test('hasConfiguredBiliWatch：总开关关闭时不备 B站通道', () => {
+  const rooms = [room(200, ON({}), 'bilibili')];
+  assert.equal(hasConfiguredBiliWatch(rooms), true, '默认开启时备通道');
+  assert.equal(hasConfiguredBiliWatch(rooms, false), false, '关闭时不备通道');
+  assert.equal(hasConfiguredBiliWatch([], true), false, '无配置房间时不备通道');
 });
 
 // === 滑动窗口计数与冷却 ===

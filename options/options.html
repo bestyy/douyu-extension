@@ -54,22 +54,31 @@
     <h2 class="group-title">开播通知（全部房间）</h2>
     <section class="card">
       <label class="toggle-row">
-        <input type="checkbox" id="notificationsEnabled" checked>
         <span>新开播时发送桌面通知</span>
+        <input type="checkbox" id="notificationsEnabled" checked>
       </label>
     </section>
     <p class="group-hint">总开关：关闭后所有房间都不发开播通知。单个房间的开关在房间行内的「通知设置」里（弹幕检测通知不受此开关影响）</p>
 
+    <h2 class="group-title">弹幕检测（全部房间）</h2>
+    <section class="card">
+      <label class="toggle-row">
+        <span>命中检测词时发送桌面通知</span>
+        <input type="checkbox" id="danmakuWatchEnabled" checked>
+      </label>
+    </section>
+    <p class="group-hint">总开关：关闭后所有房间都停止盯弹幕（断开检测长连接、清空排队）；各房间行内已配的检测词保留，重新打开即恢复</p>
+
     <h2 class="group-title">观众数设置</h2>
     <section class="card">
       <label class="toggle-row">
-        <input type="checkbox" id="fetchDouyuViewerCount" checked>
         <span>斗鱼 · 贵宾数</span>
+        <input type="checkbox" id="fetchDouyuViewerCount" checked>
       </label>
       <div class="cell-divider"></div>
       <label class="toggle-row">
-        <input type="checkbox" id="fetchBilibiliViewerCount" checked>
         <span>B站 · 高能榜在线数</span>
+        <input type="checkbox" id="fetchBilibiliViewerCount" checked>
       </label>
     </section>
     <p class="group-hint">两个开关独立控制，关闭后停止对应平台的观众数采样（每 10 分钟更新一次）</p>

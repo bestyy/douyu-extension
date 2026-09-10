@@ -389,12 +389,12 @@ function detectionNotes(chrome) {
 // 建立一个典型环境：房间 + 轮询路由 + 弹幕连接设施
 // 存储先于 background 加载写入（与真实 SW 被唤醒时一致：存储里已有上次的快照与配置）
 // 用例结束销毁检测客户端（心跳定时器否则会吊住 node 进程）
-async function setup(t, { rooms, streamers = [], onlineState, fetchHandlers, loggedIn = false }) {
+async function setup(t, { rooms, streamers = [], onlineState, fetchHandlers, loggedIn = false, settings }) {
   const clock = createClock();
   const chrome = createChromeStub({ loggedIn });
   const wsStub = createWebSocketStub();
   await chrome.storage.local.set({
-    settings: { ...DEFAULT_SETTINGS },
+    settings: { ...DEFAULT_SETTINGS, ...(settings || {}) },
     rooms,
     streamers,
     notifiedRooms: []
@@ -719,4 +719,58 @@ test('B站登录态：检测连接下发到桥接页（不建 SW 直连），采
   online.online = false;
   await fireAlarm(chrome);
   assert.equal(chrome.__tabCalls.remove.length, 1, '下播后关闭桥接页');
+});
+
+// === 弹幕检测总开关 ===
+
+test('总开关关闭：不建检测长连接也不排队，开播通知照发；重新打开立即恢复盯守', async (t) => {
+  const online = { online: true };
+  const { chrome, ws } = await setup(t, {
+    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: true, watch: watchConfig({ threshold: 1 }) }],
+    settings: { danmakuWatchEnabled: false },
+    fetchHandlers: douyuHandlers(online)
+  });
+
+  await fireAlarm(chrome);
+  assert.equal(ws.sockets.length, 0, '总开关关闭：开播也不建检测连接');
+  assert.deepEqual(chrome.__store.watchQueued || [], [], '总开关关闭：不写排队提示');
+  assert.equal(notesById(chrome, 'douyu_100').length, 1, '开播通知与检测总开关正交，照常发送');
+
+  // 设置页打开总开关：写设置 + 发 WATCH_CONFIG_UPDATED（不等下一轮轮询即恢复）
+  const { settings } = await chrome.storage.local.get('settings');
+  await chrome.storage.local.set({ settings: { ...settings, danmakuWatchEnabled: true } });
+  await dispatchMessage(chrome, { type: 'WATCH_CONFIG_UPDATED' });
+
+  assert.equal(ws.douyu().length, 1, '重新打开后立即重建盯守连接');
+  const sock = ws.douyu()[0];
+  sock.serverOpen();
+  await sock.serverMessage(dyChat('上车'));
+  assert.equal(notesById(chrome, 'douyu_100_watch').length, 1, '恢复后检测链路完整可用（命中即通知）');
+});
+
+test('总开关关闭：已在盯守的 B站桥接页被释放（登录态）', async (t) => {
+  const online = { online: true };
+  const { chrome, ws } = await setup(t, {
+    rooms: [{ roomId: '200', nickname: 'B站主播', platform: 'bilibili', notify: false, watch: watchConfig({ threshold: 1 }) }],
+    fetchHandlers: biliHandlers(online),
+    loggedIn: true
+  });
+
+  await fireAlarm(chrome);
+  const firstWatch = chrome.__tabCalls.sendMessage.find(c => c.msg.type === 'BILI_WATCH_ROOMS');
+  assert.deepEqual([...firstWatch.msg.roomIds], ['200'], '开启时向桥接页下发盯守房间');
+
+  // 设置页关闭总开关
+  const { settings } = await chrome.storage.local.get('settings');
+  await chrome.storage.local.set({ settings: { ...settings, danmakuWatchEnabled: false } });
+  await dispatchMessage(chrome, { type: 'WATCH_CONFIG_UPDATED' });
+
+  const watchMsgs = chrome.__tabCalls.sendMessage.filter(c => c.msg.type === 'BILI_WATCH_ROOMS');
+  assert.deepEqual([...watchMsgs[watchMsgs.length - 1].msg.roomIds], [], '关闭后向桥接页下发空列表（页面侧断开检测连接）');
+  assert.equal(chrome.__tabCalls.remove.length, 1, '关闭后释放常驻桥接页');
+  assert.equal(ws.bili().length, 0, '不残留 SW 直连检测连接');
+
+  // 关闭状态下桥接页回传的弹幕不再计数（避免残留连接误报）
+  await dispatchMessage(chrome, { type: 'BILI_DANMU', roomId: '200', text: '抽奖口令来了', user: '小明' });
+  assert.equal(notesById(chrome, 'bilibili_200_watch').length, 0, '总开关关闭时不触发检测通知');
 });
