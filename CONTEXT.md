@@ -29,8 +29,12 @@ B站直播间的高能榜在线数，通过弹幕 WebSocket 的 `ONLINE_RANK_COU
 _Avoid_: 观众数（高能榜是 B站特有指标）
 
 **观众数 (viewer count)**:
-各平台特有观众指标的统称：斗鱼贵宾数、B站高能榜。通过 10 分钟一次的弹幕 WebSocket 采样获取，每个平台独立开关控制。
+各平台特有观众指标的统称：斗鱼贵宾数、B站高能榜。通过 10 分钟一次的弹幕 WebSocket 采样获取，每个平台独立开关控制（`settings.fetchDouyuViewerCount` / `fetchBilibiliViewerCount`）。
 _Avoid_: 在线人数（语义不同）
+
+**观众数提醒 (viewer alert)**:
+某房间的观众数从阈值以下升到阈值以上时发一条桌面通知的 per-room 功能（`rooms[].viewerAlert`），受全局总开关 `settings.viewerAlertEnabled` 控制（默认开启，关闭后不判定、各房配置保留）。判定依据是观众数采样结果，因此要求对应平台的观众数开关处于开启状态。与开播通知的 `notify`、弹幕检测的 `watch` 相互正交。
+_Avoid_: 阈值告警、贵宾数监控（提醒是越过阈值的一次性通知，不是持续监控）
 
 **采样 (sample)**:
 每 10 分钟由 `chrome.alarms` 驱动的一次短连接弹幕 WebSocket 会话：连接 → 收到目标数据 → 立即断开。采样自身不保持连接。
@@ -58,4 +62,8 @@ _Avoid_: 弹幕监控（监控指轮询开播状态，不是看弹幕文本）�
 
 **检测通知 (detection notification)**:
 命中在窗口内达到阈值时发的桌面通知，按房间复用通知 ID 覆盖，不堆积，点击进入直播间。
+_Avoid_: 提醒、弹窗、告警
+
+**观众数通知 (viewer alert notification)**:
+观众数越过房间阈值时发的桌面通知（ID 为房间复合键 + `_viewer` 后缀），按房间复用通知 ID 覆盖，不堆积，点击进入直播间。
 _Avoid_: 提醒、弹窗、告警

@@ -2,6 +2,7 @@
 
 importScripts('lib/storage.js');
 importScripts('lib/danmaku-watch.js');
+importScripts('lib/viewer-alert.js');
 importScripts('lib/douyu-api.js');
 importScripts('lib/bilibili-api.js');
 importScripts('lib/douyu-barrage.js');
@@ -89,7 +90,7 @@ const watchReady = (async () => {
   console.error('检测盯守初始化失败:', e);
 });
 
-// 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）
+// 收到 oni 推送 → 更新 streamers[].vipCount（写入 storage 供 popup 读取）+ 观众数提醒判定
 async function updateVipCount({ roomId, vipCount }) {
   if (!(await isViewerFetchEnabled('douyu'))) {
     return;
@@ -99,11 +100,13 @@ async function updateVipCount({ roomId, vipCount }) {
   if (index === -1) {
     return;
   }
+  const prevValue = streamers[index].vipCount;
   streamers[index] = { ...streamers[index], vipCount };
   await StorageHelper.set('streamers', streamers);
+  await evaluateViewerAlert('douyu', roomId, { prevValue, nextValue: vipCount, streamer: streamers[index] });
 }
 
-// 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）
+// 收到 ONLINE_RANK_COUNT 推送 → 更新 streamers[].rankCount（高能榜在线数）+ 观众数提醒判定
 // 页面通道为长连接模式（每 4-6 秒推送一次），仅在数值变化时写 storage 与打日志
 async function updateRankCount({ roomId, rankCount }) {
   if (!(await isViewerFetchEnabled('bilibili'))) {
@@ -118,9 +121,11 @@ async function updateRankCount({ roomId, rankCount }) {
   if (streamers[index].rankCount === rankCount) {
     return; // 数值未变化，跳过写入
   }
+  const prevValue = streamers[index].rankCount;
   streamers[index] = { ...streamers[index], rankCount };
   await StorageHelper.set('streamers', streamers);
   console.log(`[bili] updateRankCount 已写入 ${roomId} rankCount=${rankCount}`);
+  await evaluateViewerAlert('bilibili', roomId, { prevValue, nextValue: rankCount, streamer: streamers[index] });
 }
 
 // === B站弹幕页面通道（SW 直连被风控时的降级后备） ===
@@ -259,6 +264,9 @@ async function syncViewerSettings() {
 // 计数与冷却是内存态（与检测长连接同生命周期）：下播断开即清空，SW 重启归零；
 // 盯守配置缓存同样在内存里，但 SW 唤醒时会按存储中的开播快照立即重建（见 watchReady）。
 const WATCH_NOTIFICATION_SUFFIX = '_watch'; // 检测通知 ID 后缀（与开播通知互不覆盖）
+const VIEWER_ALERT_NOTIFICATION_SUFFIX = '_viewer'; // 观众数提醒 ID 后缀（同样与开播通知互不覆盖）
+// 派生通知 ID 的后缀表（getLiveUrlFromNotificationId 据此还原房间复合键）
+const NOTIFICATION_ID_SUFFIXES = [WATCH_NOTIFICATION_SUFFIX, VIEWER_ALERT_NOTIFICATION_SUFFIX];
 const watchCounter = new DanmakuWatchCounter();
 const watchedConfigs = new Map(); // 房间复合键 -> { key, platform, roomId, nickname, config }（每轮轮询重建）
 let watchedKeys = new Set();      // 上一轮盯守的房间复合键（用于识别下播/停用边沿）
@@ -451,6 +459,13 @@ async function refreshRooms() {
     if (prevMap[key] && typeof prevMap[key].rankCount === 'number') {
       item.rankCount = prevMap[key].rankCount;
     }
+    // 连续两轮确认离线 → 清空上一场的观众数存量：popup 不再显示旧值，
+    // 观众数提醒也随之重新武装（B站未开播不上报高能榜，不清空则下一场旧值仍 ≥ 阈值，
+    // 永远没有上升边沿）。两轮而非一轮：防单次 API 抖动误判离线导致同场重复提醒。
+    if (item.online === false && prevMap[key] && prevMap[key].online === false) {
+      delete item.vipCount;
+      delete item.rankCount;
+    }
     mergedData.push(item);
   }
 
@@ -491,6 +506,68 @@ function formatNumber(num) {
     return (num / 10000).toFixed(1) + '万';
   }
   return String(num);
+}
+
+// === 观众数提醒（复用 10 分钟采样的上升边沿，见 ADR-0002）===
+// 判定时机是「值到达时」（updateVipCount / updateRankCount），零新增连接——数据就是采样结果本身。
+// 依次全通过才发提醒：全局总开关 → 该平台观众数开关（联动：关闭即不判定，配置保留）
+// → 该房 viewerAlert 配置 → 上升边沿（值从阈值以下升到阈值以上）。
+
+/**
+ * 观众数提醒判定入口（两个平台的值到达处共用）
+ * @param {'douyu'|'bilibili'} platform
+ * @param {string} roomId
+ * @param {{prevValue?: number, nextValue: number, streamer?: object}} data 上一次/本次观众数与房间快照
+ * @returns {Promise<boolean>} 是否发了提醒
+ */
+async function evaluateViewerAlert(platform, roomId, { prevValue, nextValue, streamer }) {
+  if (!VIEWER_METRICS[platform]) {
+    return false;
+  }
+  const [settings, rooms] = await Promise.all([
+    StorageHelper.get('settings'),
+    StorageHelper.get('rooms')
+  ]);
+  if (!isViewerAlertEnabled(settings)) {
+    return false; // 总开关关闭：配置保留、不判定
+  }
+  if (!(await isViewerFetchEnabled(platform))) {
+    return false; // 平台观众数开关关闭：拿不到数值，配置保留、不判定
+  }
+  const room = (rooms || []).find(r => r.platform === platform && String(r.roomId) === String(roomId));
+  const config = normalizeViewerAlert(room?.viewerAlert);
+  if (!config) {
+    return false; // 该房未启用观众数提醒
+  }
+  if (!isViewerAlertCrossed(prevValue, nextValue, config.threshold)) {
+    return false;
+  }
+  await notifyViewerAlert(platform, { roomId: String(roomId), nickname: room.nickname || '' }, nextValue, config.threshold, streamer);
+  return true;
+}
+
+/**
+ * 观众数提醒：ID 为派生 ID（房间复合键 + _viewer 后缀），与开播通知 / 检测通知并存，
+ * 同一房间重复触发复用同一 ID → 通知中心覆盖而非堆积；点击进入直播间
+ * （ID 解析见 getLiveUrlFromNotificationId）。
+ * 不受开播通知总开关（settings.notificationsEnabled）影响：只受自己的总开关
+ * （settings.viewerAlertEnabled）与该平台观众数开关约束。
+ */
+async function notifyViewerAlert(platform, { roomId, nickname }, value, threshold, streamer) {
+  const meta = VIEWER_METRICS[platform];
+  try {
+    await chrome.notifications.create(`${platform}_${roomId}${VIEWER_ALERT_NOTIFICATION_SUFFIX}`, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: `${platformLabel(platform)} ${nickname} ${meta.label}超过 ${threshold}！`,
+      message: streamer?.title || '正在直播',
+      contextMessage: `当前 ${formatNumber(value)} ${meta.shortLabel}`,
+      buttons: [{ title: '进入直播间' }],
+      priority: 2
+    });
+  } catch (e) {
+    console.error('观众数提醒创建失败:', e);
+  }
 }
 
 // === 新开播通知 ===
@@ -559,12 +636,16 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   if (url) chrome.tabs.create({ url });
 });
 
-// 检测通知 ID 后缀：开播通知为 `platform_roomId`，检测通知为派生的 `platform_roomId_watch`
-// （房间号恒为纯数字，去掉后缀后复用同一套 URL 规则）
+// 通知 ID 与直播间的对应：开播通知为 `platform_roomId`，检测通知 `_watch`、
+// 观众数提醒 `_viewer` 为派生 ID（房间号恒为纯数字，去掉后缀后复用同一套 URL 规则）
 function getLiveUrlFromNotificationId(notificationId) {
-  const baseId = notificationId.endsWith(WATCH_NOTIFICATION_SUFFIX)
-    ? notificationId.slice(0, -WATCH_NOTIFICATION_SUFFIX.length)
-    : notificationId;
+  let baseId = notificationId;
+  for (const suffix of NOTIFICATION_ID_SUFFIXES) {
+    if (baseId.endsWith(suffix)) {
+      baseId = baseId.slice(0, -suffix.length);
+      break;
+    }
+  }
   const [platform, ...rest] = baseId.split('_');
   const roomId = rest.join('_');
   if (platform === 'bilibili') {

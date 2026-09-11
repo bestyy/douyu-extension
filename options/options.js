@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const refreshInterval = document.getElementById('refreshInterval');
   const notificationsEnabled = document.getElementById('notificationsEnabled');
   const danmakuWatchEnabled = document.getElementById('danmakuWatchEnabled');
+  const viewerAlertEnabled = document.getElementById('viewerAlertEnabled');
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
   // 加载现有设置
@@ -22,6 +23,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     notificationsEnabled.checked = data.settings.notificationsEnabled;
   }
   danmakuWatchEnabled.checked = isDanmakuWatchEnabled(data.settings);
+  viewerAlertEnabled.checked = isViewerAlertEnabled(data.settings);
   // 观众数开关（v1.x 起按平台拆分）：新字段优先，未写入时回退旧总开关 fetchViewerCount 语义
   fetchDouyuViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchDouyuViewerCount');
   fetchBilibiliViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchBilibiliViewerCount');
@@ -33,9 +35,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 渲染房间列表
   async function renderRoomList() {
-    const { rooms = [], streamers = [] } = await chrome.storage.local.get(['rooms', 'streamers']);
+    const { rooms = [], streamers = [], settings } = await chrome.storage.local.get(['rooms', 'streamers', 'settings']);
     const onlineMap = {};
     streamers.forEach(s => { onlineMap[`${s.platform}_${s.roomId}`] = s.online; });
+    // 观众数采样开关（联动提示用）：按平台取当前生效值
+    const viewerFetchByPlatform = {
+      douyu: viewerToggleEnabled(settings, 'fetchDouyuViewerCount'),
+      bilibili: viewerToggleEnabled(settings, 'fetchBilibiliViewerCount')
+    };
 
     // 头部信号条：按在线房间数（1/3/6/10 档）点亮
     const onlineCount = streamers.filter(s => s.online).length;
@@ -71,7 +78,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
           <button class="btn-notify${roomNotifyActive(r) ? ' on' : ''}" title="该房间的通知设置">通知设置</button>
           <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
-          ${renderNotifyPanel(r, danmakuWatchEnabled.checked)}
+          ${renderNotifyPanel(r, {
+            watchEnabled: danmakuWatchEnabled.checked,
+            alertEnabled: viewerAlertEnabled.checked,
+            viewerFetchEnabled: viewerFetchByPlatform[r.platform] !== false
+          })}
         </div>
       `;
     }).join('');
@@ -161,6 +172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       refreshInterval: interval,
       notificationsEnabled: notificationsEnabled.checked,
       danmakuWatchEnabled: danmakuWatchEnabled.checked,
+      viewerAlertEnabled: viewerAlertEnabled.checked,
       fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
       fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
     };
@@ -187,6 +199,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });
   });
 
+  // 观众数提醒总开关：即时生效（background 的判定入口读设置），重绘房间列表面板内的失效提示
+  viewerAlertEnabled.addEventListener('change', async () => {
+    const data = await chrome.storage.local.get('settings');
+    const settings = { ...(data.settings || {}), viewerAlertEnabled: viewerAlertEnabled.checked };
+    await chrome.storage.local.set({ settings });
+    await renderRoomList();
+  });
+
   // 观众数开关：即时生效（通知 background 同步弹幕客户端连接）
   // 两个平台字段同时写入，未改动的平台取 DOM 当前状态；旧总开关一并删除
   async function onViewerToggle() {
@@ -199,6 +219,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     delete nextSettings.fetchViewerCount;
     await chrome.storage.local.set({ settings: nextSettings });
     chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
+    // 采样开关是观众数提醒的联动前提：重绘面板内的「拿不到数值」提示
+    await renderRoomList();
   }
   fetchDouyuViewerCount.addEventListener('change', onViewerToggle);
   fetchBilibiliViewerCount.addEventListener('change', onViewerToggle);
@@ -382,22 +404,32 @@ function escapeHtml(str) {
 // 检测配置的归一化在读写两侧都做：读用 lib/danmaku-watch.js 的 normalizeWatch
 // （未启用/无检测词视为未配置），写用同一套归一化后再落盘，用户能直接看到自己的输入被如何处理。
 
-/** 该房是否有生效的通知配置：开播通知开启，或弹幕检测已启用且有检测词（入口按钮据此高亮） */
+/**
+ * 该房是否有生效的通知配置：开播通知开启，或弹幕检测已启用且有检测词，或观众数提醒已启用（入口按钮据此高亮）
+ */
 function roomNotifyActive(room) {
-  return room.notify === true || !!normalizeWatch(room.watch);
+  return room.notify === true || !!normalizeWatch(room.watch) || !!normalizeViewerAlert(room.viewerAlert);
 }
 
 /**
  * 渲染某房间的通知设置面板（开播通知默认关闭；检测无配置时用缺省值）
  * @param {object} room 存储中的房间对象
- * @param {boolean} watchEnabled 弹幕检测总开关（关闭时面板内提示该房检测暂不生效）
+ * @param {object} [state]
+ * @param {boolean} [state.watchEnabled] 弹幕检测总开关（关闭时面板内提示该房检测暂不生效）
+ * @param {boolean} [state.alertEnabled] 观众数提醒总开关（关闭时面板内提示该房提醒暂不生效）
+ * @param {boolean} [state.viewerFetchEnabled] 该平台观众数采样开关（关闭时提示拿不到数值）
  */
-function renderNotifyPanel(room, watchEnabled = true) {
+function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, viewerFetchEnabled = true } = {}) {
   const watchBlock = WATCH_PLATFORMS.includes(room.platform)
     ? renderWatchBlock(room.watch, watchEnabled)
     : `
       <div class="panel-divider"></div>
       <p class="watch-hint">该平台暂不支持弹幕检测（需要平台弹幕通道，目前仅斗鱼 / B站 支持）</p>`;
+  const alertBlock = VIEWER_METRICS[room.platform]
+    ? renderViewerAlertBlock(room.viewerAlert, room.platform, alertEnabled, viewerFetchEnabled)
+    : `
+      <div class="panel-divider"></div>
+      <p class="watch-hint">该平台暂不支持观众数提醒（需要平台观众数指标，目前仅斗鱼 / B站 支持）</p>`;
   return `
     <div class="notify-panel hidden">
       <label class="toggle-row">
@@ -405,6 +437,7 @@ function renderNotifyPanel(room, watchEnabled = true) {
         <input type="checkbox" class="room-notify"${room.notify === true ? ' checked' : ''}>
       </label>
       ${watchBlock}
+      ${alertBlock}
       <span class="panel-saved hidden">已保存</span>
     </div>
   `;
@@ -439,6 +472,36 @@ function renderWatchBlock(watch, watchEnabled = true) {
   `;
 }
 
+/**
+ * 观众数提醒配置块（启用开关 + 阈值）
+ * @param {object} alert rooms[].viewerAlert
+ * @param {string} platform 平台（决定指标文案：斗鱼贵宾数 / B站高能榜在线数）
+ * @param {boolean} alertEnabled 观众数提醒总开关（关闭且该房已启用时提示配置暂不生效）
+ * @param {boolean} viewerFetchEnabled 该平台观众数采样开关（关闭时提示拿不到数值，联动不生效）
+ */
+function renderViewerAlertBlock(alert, platform, alertEnabled = true, viewerFetchEnabled = true) {
+  const meta = VIEWER_METRICS[platform];
+  const enabled = alert?.enabled === true;
+  const threshold = viewerAlertThreshold(alert || {});
+  const hint = enabled && !alertEnabled
+    ? '<p class="watch-hint master-off">观众数提醒总开关已关闭，该房配置暂不生效（在下方「观众数提醒（全部房间）」重新打开）</p>'
+    : enabled && !viewerFetchEnabled
+      ? `<p class="watch-hint master-off">${platform === 'bilibili' ? 'B站 · 高能榜在线数' : '斗鱼 · 贵宾数'}开关已关闭，拿不到数值、提醒不会触发（在下方「观众数设置」重新打开）</p>`
+      : '';
+  return `
+      <div class="panel-divider"></div>
+      <label class="toggle-row">
+        <span>观众数提醒</span>
+        <input type="checkbox" class="alert-enabled"${enabled ? ' checked' : ''}>
+      </label>
+      <div class="watch-nums">
+        <label class="watch-num">超过 <input type="number" class="alert-threshold" min="${VIEWER_ALERT_LIMITS[0]}" max="${VIEWER_ALERT_LIMITS[1]}" value="${threshold}"> ${meta.shortLabel} 时提醒</label>
+      </div>
+      <p class="watch-hint">该房${meta.label}从阈值以下升到阈值以上时提醒一次，回落后再超过会再提醒（每 10 分钟采样一次，短时高峰可能采不到）。</p>
+      ${hint}
+  `;
+}
+
 const panelSavedTimers = new WeakMap();
 
 /** 面板内「已保存」提示（短暂显示后自动隐藏） */
@@ -450,7 +513,7 @@ function showPanelSaved(panel) {
 }
 
 /**
- * 保存某房间的通知配置（开播通知 + 弹幕检测）：归一化后写回表单与 storage，
+ * 保存某房间的通知配置（开播通知 + 弹幕检测 + 观众数提醒）：归一化后写回表单与 storage，
  * 并让 background 立即收敛检测长连接（平台无弹幕通道时面板里没有检测控件，只写 notify）
  */
 async function saveNotifyPanel(panel) {
@@ -483,17 +546,33 @@ async function saveNotifyPanel(panel) {
     cooldownInput.value = watch.cooldownMinutes;
   }
 
+  let viewerAlert = null;
+  if (panel.querySelector('.alert-enabled')) {
+    const thresholdInput = panel.querySelector('.alert-threshold');
+    // 数值归一化复用 lib/viewer-alert.js（与 background 判定侧同一套区间与缺省值）
+    viewerAlert = {
+      enabled: panel.querySelector('.alert-enabled').checked,
+      threshold: viewerAlertThreshold({ threshold: thresholdInput.value })
+    };
+    thresholdInput.value = viewerAlert.threshold; // 回写钳制后的实际生效值
+  }
+
   const { rooms = [] } = await chrome.storage.local.get('rooms');
   const index = rooms.findIndex(r => r.roomId === roomId && r.platform === platform);
   if (index === -1) {
     return; // 房间已被移除：面板随下次渲染消失，不写回
   }
-  const saved = { ...rooms[index], notify, ...(watch ? { watch } : {}) };
+  const saved = {
+    ...rooms[index],
+    notify,
+    ...(watch ? { watch } : {}),
+    ...(viewerAlert ? { viewerAlert } : {})
+  };
   const updatedRooms = rooms.slice();
   updatedRooms[index] = saved;
   await chrome.storage.local.set({ rooms: updatedRooms });
 
-  // 入口按钮高亮 = 该房有生效的通知配置（开播通知开启，或检测已启用且至少有一个检测词）
+  // 入口按钮高亮 = 该房有生效的通知配置（开播通知开启，或检测已启用且有检测词，或观众数提醒已启用）
   roomItem.querySelector('.btn-notify').classList.toggle('on', roomNotifyActive(saved));
   if (watch) {
     chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });

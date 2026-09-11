@@ -39,7 +39,7 @@
       <div class="cell-divider"></div>
       <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
     </section>
-    <p class="group-hint">添加要监控的房间号。房间行内可展开「通知设置」：单独开关该房的开播通知，并可配置弹幕检测（开播时自动盯弹幕，检测词在窗口内达到阈值就通知；斗鱼 / B站 支持）</p>
+    <p class="group-hint">添加要监控的房间号。房间行内可展开「通知设置」：单独开关该房的开播通知，并可配置弹幕检测（开播时自动盯弹幕，检测词在窗口内达到阈值就通知）与观众数提醒（贵宾数 / 高能榜超过阈值时通知）；两者均斗鱼 / B站 支持</p>
 
     <h2 class="group-title">刷新设置</h2>
     <section class="card">
@@ -84,9 +84,19 @@
       </label>
     </section>
     <p class="group-hint">两个开关独立控制，关闭后停止对应平台的观众数采样（每 10 分钟更新一次）</p>
+
+    <h2 class="group-title">观众数提醒（全部房间）</h2>
+    <section class="card">
+      <label class="toggle-row">
+        <span>观众数超过房间阈值时发送桌面通知</span>
+        <input type="checkbox" id="viewerAlertEnabled" checked>
+      </label>
+    </section>
+    <p class="group-hint">总开关：关闭后所有房间都不发观众数提醒（各房已配的阈值保留）。每个房间的阈值在房间行内的「通知设置」里，数值从阈值以下升到阈值以上时提醒一次；需先打开上方对应平台的观众数开关，否则拿不到数值、提醒不会触发</p>
   </div>
 
   <script src="../lib/danmaku-watch.js"></script>
+  <script src="../lib/viewer-alert.js"></script>
   <script src="options.js"></script>
 </body>
 
