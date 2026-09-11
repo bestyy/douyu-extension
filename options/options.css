@@ -350,6 +350,26 @@ input[type="number"]:focus,
 .cell-btn:hover { background: var(--hover); }
 .cell-btn:active { background: var(--fill); }
 
+/* ===== 两行文案行（标题 + 说明，开关行与设置行共用） ===== */
+.row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.row-title {
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--label);
+}
+
+.row-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--label-2);
+}
+
 /* ===== 设置行 ===== */
 .setting-row {
   display: flex;
@@ -358,9 +378,10 @@ input[type="number"]:focus,
   flex-wrap: wrap;
 }
 
-.setting-row label {
-  font-size: 14px;
-  color: var(--label);
+/* 文案占满左侧，控件贴右 */
+.setting-row .row-text {
+  margin-right: auto;
+  padding-right: 8px;
 }
 
 .setting-row input[type="number"] { width: 90px; }
@@ -380,7 +401,7 @@ input[type="number"]:focus,
   font-size: 15px;
   color: var(--label);
   user-select: none;
-  padding: 4px 0;
+  padding: 6px 0;
 }
 
 .toggle-row input[type="checkbox"] {
@@ -626,6 +647,7 @@ input[type="number"]:focus,
 
 .notify-panel .toggle-row {
   font-size: 14px;
+  padding: 4px 0;
 }
 
 /* 面板内分组分隔线（面板已有内边距，不需要卡片分隔线的负外边距） */
@@ -693,15 +715,21 @@ input[type="number"]:focus,
   font-weight: 500;
 }
 
-/* 面板内「已保存」提示 */
-.panel-saved {
+/* 即时保存提示（短暂显示后自动隐藏） */
+.saved-tip {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--green-ink);
 }
 
-.panel-saved.hidden {
+.saved-tip.hidden {
   display: none;
+}
+
+/* 设置行内的提示用占位隐藏，避免出现/消失时挤动输入框 */
+.setting-row .saved-tip.hidden {
+  display: inline;
+  visibility: hidden;
 }
 
 /* ===== 平台标签（胶囊） ===== */

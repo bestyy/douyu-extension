@@ -161,26 +161,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // 保存设置
-  document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
-    const interval = Math.max(60, parseInt(refreshInterval.value, 10) || 60);
-    refreshInterval.value = interval;
-    // 合并现有 settings（保留 openInCurrentTab 等字段）
+  // 轮询间隔：改动即保存（与页面其余控件一致），失焦/回车时把输入钳制回生效值
+  const intervalSaved = document.getElementById('intervalSaved');
+  let intervalInputTimer = null;
+  let intervalTipTimer = null;
+  let savedInterval = Math.max(60, parseInt(refreshInterval.value, 10) || 60);
+
+  function showIntervalSaved() {
+    intervalSaved.classList.remove('hidden');
+    clearTimeout(intervalTipTimer);
+    intervalTipTimer = setTimeout(() => intervalSaved.classList.add('hidden'), 1500);
+  }
+
+  /** @param {boolean} clampToMin 输入结束（失焦/回车）时钳制并回写；输入中途只落盘合法值 */
+  async function saveRefreshInterval(clampToMin) {
+    const parsed = parseInt(refreshInterval.value, 10);
+    if (!clampToMin && (isNaN(parsed) || parsed < 60)) {
+      return; // 输入中途（删空、位数不够）不落盘，等失焦时统一钳制
+    }
+    const interval = Math.max(60, parsed || 60);
+    if (clampToMin) {
+      refreshInterval.value = interval;
+    }
+    if (interval === savedInterval) {
+      return; // 值没变就不写盘，也避免重复触发后台同步
+    }
+    savedInterval = interval;
     const data = await chrome.storage.local.get('settings');
-    const nextSettings = {
-      ...(data.settings || {}),
-      refreshInterval: interval,
-      notificationsEnabled: notificationsEnabled.checked,
-      danmakuWatchEnabled: danmakuWatchEnabled.checked,
-      viewerAlertEnabled: viewerAlertEnabled.checked,
-      fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
-      fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
-    };
-    // 旧总开关退役：两个平台字段已显式写入，删除避免回退逻辑歧义
-    delete nextSettings.fetchViewerCount;
-    await chrome.storage.local.set({ settings: nextSettings });
-    chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
-    showStatus(document.getElementById('settingsStatus'), '设置已保存', 'success');
+    await chrome.storage.local.set({ settings: { ...(data.settings || {}), refreshInterval: interval } });
+    chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' }); // 重建轮询 alarm
+    showIntervalSaved();
+  }
+
+  refreshInterval.addEventListener('input', () => {
+    clearTimeout(intervalInputTimer);
+    intervalInputTimer = setTimeout(() => saveRefreshInterval(false), 600);
+  });
+  refreshInterval.addEventListener('change', () => {
+    clearTimeout(intervalInputTimer);
+    saveRefreshInterval(true);
   });
 
   notificationsEnabled.addEventListener('change', async () => {
@@ -399,7 +418,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// === 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测）===
+// === 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测 + 观众数提醒）===
 // storage 存用户意图（开播通知开关 + 检测启用开关 + 检测词 + 阈值/窗口/冷却），
 // 检测配置的归一化在读写两侧都做：读用 lib/danmaku-watch.js 的 normalizeWatch
 // （未启用/无检测词视为未配置），写用同一套归一化后再落盘，用户能直接看到自己的输入被如何处理。
@@ -438,7 +457,7 @@ function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, vie
       </label>
       ${watchBlock}
       ${alertBlock}
-      <span class="panel-saved hidden">已保存</span>
+      <span class="saved-tip hidden">已保存</span>
     </div>
   `;
 }
@@ -453,7 +472,7 @@ function renderWatchBlock(watch, watchEnabled = true) {
   const keywords = normalizeKeywords(watch?.keywords).join('\n');
   const limits = normalizeWatchLimits(watch || {});
   const masterOffHint = enabled && !watchEnabled
-    ? '<p class="watch-hint master-off">弹幕检测总开关已关闭，该房配置暂不生效（在下方「弹幕检测（全部房间）」重新打开）</p>'
+    ? '<p class="watch-hint master-off">弹幕检测总开关已关闭，该房配置暂不生效（在下方「通知总开关」重新打开）</p>'
     : '';
   return `
       <div class="panel-divider"></div>
@@ -484,9 +503,9 @@ function renderViewerAlertBlock(alert, platform, alertEnabled = true, viewerFetc
   const enabled = alert?.enabled === true;
   const threshold = viewerAlertThreshold(alert || {});
   const hint = enabled && !alertEnabled
-    ? '<p class="watch-hint master-off">观众数提醒总开关已关闭，该房配置暂不生效（在下方「观众数提醒（全部房间）」重新打开）</p>'
+    ? '<p class="watch-hint master-off">观众数提醒总开关已关闭，该房配置暂不生效（在下方「通知总开关」重新打开）</p>'
     : enabled && !viewerFetchEnabled
-      ? `<p class="watch-hint master-off">${platform === 'bilibili' ? 'B站 · 高能榜在线数' : '斗鱼 · 贵宾数'}开关已关闭，拿不到数值、提醒不会触发（在下方「观众数设置」重新打开）</p>`
+      ? `<p class="watch-hint master-off">${platform === 'bilibili' ? 'B站 · 高能榜在线数' : '斗鱼 · 贵宾数'}开关已关闭，拿不到数值、提醒不会触发（在下方「刷新与采样」重新打开）</p>`
       : '';
   return `
       <div class="panel-divider"></div>
@@ -506,7 +525,7 @@ const panelSavedTimers = new WeakMap();
 
 /** 面板内「已保存」提示（短暂显示后自动隐藏） */
 function showPanelSaved(panel) {
-  const tip = panel.querySelector('.panel-saved');
+  const tip = panel.querySelector('.saved-tip');
   tip.classList.remove('hidden');
   clearTimeout(panelSavedTimers.get(panel));
   panelSavedTimers.set(panel, setTimeout(() => tip.classList.add('hidden'), 1500));
