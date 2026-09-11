@@ -502,10 +502,12 @@ function renderViewerAlertBlock(alert, platform, alertEnabled = true, viewerFetc
   const meta = VIEWER_METRICS[platform];
   const enabled = alert?.enabled === true;
   const threshold = viewerAlertThreshold(alert || {});
+  // 指标名取自 meta.label，与「刷新与采样」区块里那条开关的行标题保持同源
+  const platformName = platform === 'bilibili' ? 'B站' : '斗鱼';
   const hint = enabled && !alertEnabled
     ? '<p class="watch-hint master-off">观众数提醒总开关已关闭，该房配置暂不生效（在下方「通知总开关」重新打开）</p>'
     : enabled && !viewerFetchEnabled
-      ? `<p class="watch-hint master-off">${platform === 'bilibili' ? 'B站 · 高能榜在线数' : '斗鱼 · 贵宾数'}开关已关闭，拿不到数值、提醒不会触发（在下方「刷新与采样」重新打开）</p>`
+      ? `<p class="watch-hint master-off">${platformName} · ${meta.label}开关已关闭，拿不到数值、提醒不会触发（在下方「刷新与采样」重新打开）</p>`
       : '';
   return `
       <div class="panel-divider"></div>

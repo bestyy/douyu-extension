@@ -57,14 +57,15 @@ const VIEWER_SAMPLE_INTERVAL = 10; // 观众数采样间隔（分钟），与 sa
 
 // 读取某平台的观众数获取开关（settings.fetchDouyuViewerCount / fetchBilibiliViewerCount，默认开启）；
 // 新字段未写入时回退旧总开关 fetchViewerCount 语义（旧版本仅存有该字段）
-async function isViewerFetchEnabled(platform) {
-  const settings = await StorageHelper.get('settings');
-  if (!settings) return true;
+// 调用方已经读过 settings 时传入 settings，省掉一次重复的存储往返
+async function isViewerFetchEnabled(platform, settings) {
+  const stored = settings ?? await StorageHelper.get('settings');
+  if (!stored) return true;
   const key = platform === 'bilibili' ? 'fetchBilibiliViewerCount' : 'fetchDouyuViewerCount';
-  if (settings[key] !== undefined) {
-    return settings[key] !== false;
+  if (stored[key] !== undefined) {
+    return stored[key] !== false;
   }
-  return settings.fetchViewerCount !== false;
+  return stored.fetchViewerCount !== false;
 }
 
 // 检测 B站登录态：SESSDATA Cookie 存在即视为已登录。
@@ -374,19 +375,11 @@ async function handleDanmu(platform, { roomId, text, user }) {
  */
 async function notifyDanmakuHit(entry, { keyword, text, user, count }) {
   const body = user ? `${user}：${truncateDanmu(text)}` : truncateDanmu(text);
-  try {
-    await chrome.notifications.create(`${entry.key}${WATCH_NOTIFICATION_SUFFIX}`, {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: `${platformLabel(entry.platform)} ${entry.nickname} 弹幕命中！`,
-      message: body,
-      contextMessage: `${entry.config.windowMinutes} 分钟内「${keyword}」命中 ${count} 次`,
-      buttons: [{ title: '进入直播间' }],
-      priority: 2
-    });
-  } catch (e) {
-    console.error('检测通知创建失败:', e);
-  }
+  await createRoomNotification(`${entry.key}${WATCH_NOTIFICATION_SUFFIX}`, {
+    title: `${platformLabel(entry.platform)} ${entry.nickname} 弹幕命中！`,
+    message: body,
+    contextMessage: `${entry.config.windowMinutes} 分钟内「${keyword}」命中 ${count} 次`
+  });
 }
 
 /** 通知标题的平台前缀（与 popup / 设置页的平台标签一致） */
@@ -398,6 +391,31 @@ function platformLabel(platform) {
 function truncateDanmu(text) {
   const str = String(text || '');
   return str.length > 60 ? `${str.slice(0, 60)}…` : str;
+}
+
+/**
+ * 房间通知的统一创建入口：开播 / 弹幕命中 / 观众数提醒三种通知外形一致
+ * （同图标、同「进入直播间」按钮、同优先级），只有 ID、标题与正文不同。
+ * @param {string} notificationId 房间复合键 + 场景后缀（同房重复触发即覆盖，不堆积）
+ * @param {{title: string, message: string, contextMessage: string}} content
+ * @returns {Promise<boolean>} 是否创建成功（失败只记日志，由调用方决定是否回落）
+ */
+async function createRoomNotification(notificationId, { title, message, contextMessage }) {
+  try {
+    await chrome.notifications.create(notificationId, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title,
+      message,
+      contextMessage,
+      buttons: [{ title: '进入直播间' }],
+      priority: 2
+    });
+    return true;
+  } catch (e) {
+    console.error('通知创建失败:', notificationId, e);
+    return false;
+  }
 }
 
 // === 核心轮询逻辑 ===
@@ -531,7 +549,7 @@ async function evaluateViewerAlert(platform, roomId, { prevValue, nextValue, str
   if (!isViewerAlertEnabled(settings)) {
     return false; // 总开关关闭：配置保留、不判定
   }
-  if (!(await isViewerFetchEnabled(platform))) {
+  if (!(await isViewerFetchEnabled(platform, settings))) {
     return false; // 平台观众数开关关闭：拿不到数值，配置保留、不判定
   }
   const room = (rooms || []).find(r => r.platform === platform && String(r.roomId) === String(roomId));
@@ -555,19 +573,11 @@ async function evaluateViewerAlert(platform, roomId, { prevValue, nextValue, str
  */
 async function notifyViewerAlert(platform, { roomId, nickname }, value, threshold, streamer) {
   const meta = VIEWER_METRICS[platform];
-  try {
-    await chrome.notifications.create(`${platform}_${roomId}${VIEWER_ALERT_NOTIFICATION_SUFFIX}`, {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: `${platformLabel(platform)} ${nickname} ${meta.label}超过 ${threshold}！`,
-      message: streamer?.title || '正在直播',
-      contextMessage: `当前 ${formatNumber(value)} ${meta.shortLabel}`,
-      buttons: [{ title: '进入直播间' }],
-      priority: 2
-    });
-  } catch (e) {
-    console.error('观众数提醒创建失败:', e);
-  }
+  await createRoomNotification(`${platform}_${roomId}${VIEWER_ALERT_NOTIFICATION_SUFFIX}`, {
+    title: `${platformLabel(platform)} ${nickname} ${meta.label}超过 ${threshold}！`,
+    message: streamer?.title || '正在直播',
+    contextMessage: `当前 ${formatNumber(value)} ${meta.shortLabel}`
+  });
 }
 
 // === 新开播通知 ===
@@ -586,7 +596,6 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
     const alreadyNotified = notifiedMap.has(compositeKey);
 
     if (isNewlyLive && !alreadyNotified) {
-      const platformPrefix = platformLabel(streamer.platform);
       // 统计文案按平台区分：斗鱼显示贵宾数（弹幕推送），B站显示高能榜在线数（弹幕推送）
       const statText = streamer.platform === 'bilibili'
         ? (typeof streamer.rankCount === 'number' && streamer.rankCount > 0
@@ -595,19 +604,13 @@ async function checkNewLiveStreams(currentStreamers, prevOnlineSet) {
         : (typeof streamer.vipCount === 'number' && streamer.vipCount > 0
           ? `${formatNumber(streamer.vipCount)} 贵宾`
           : '');
-      try {
-        await chrome.notifications.create(compositeKey, {
-          type: 'basic',
-          iconUrl: 'icons/icon128.png',
-          title: `${platformPrefix} ${streamer.nickname} 开播了！`,
-          message: streamer.title || '正在直播',
-          contextMessage: [streamer.category, statText].filter(Boolean).join(' · '),
-          buttons: [{ title: '进入直播间' }],
-          priority: 2
-        });
+      const created = await createRoomNotification(compositeKey, {
+        title: `${platformLabel(streamer.platform)} ${streamer.nickname} 开播了！`,
+        message: streamer.title || '正在直播',
+        contextMessage: [streamer.category, statText].filter(Boolean).join(' · ')
+      });
+      if (created) {
         notifiedMap.add(compositeKey);
-      } catch (e) {
-        console.error('通知创建失败:', e);
       }
     }
   }

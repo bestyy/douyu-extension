@@ -597,7 +597,7 @@ input[type="number"]:focus,
   display: none;
 }
 
-/* ===== 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测） ===== */
+/* ===== 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测 + 观众数提醒） ===== */
 .btn-notify {
   padding: 3px 11px;
   border: 1px solid transparent;
