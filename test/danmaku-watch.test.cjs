@@ -1,7 +1,8 @@
 // test/danmaku-watch.test.cjs — 弹幕检测纯逻辑（lib/danmaku-watch.js）行为测试
 //
 // 运行：npm test（node --test test/）
-// 覆盖：配置归一化、命中匹配、盯守计划（5 上限与排队）、滑动窗口计数、冷却与锁定。
+// 覆盖：配置归一化、命中匹配、盯守计划（两种需求双总开关 + 5 上限与排队）、
+// 滑动窗口计数、冷却与锁定。
 // 计数时钟通过构造注入可调假时钟，不依赖真实时间。
 'use strict';
 
@@ -15,7 +16,7 @@ const {
   isDanmakuWatchEnabled,
   matchKeyword,
   selectWatchPlan,
-  hasConfiguredBiliWatch,
+  hasBiliWatchNeed,
   DanmakuWatchCounter
 } = require('../lib/danmaku-watch.js');
 
@@ -196,7 +197,7 @@ test('isDanmakuWatchEnabled：默认开启，仅显式 false 视为关闭（旧�
   assert.equal(isDanmakuWatchEnabled({ danmakuWatchEnabled: false }), false);
 });
 
-test('selectWatchPlan：总开关关闭时不盯守也不排队（房间配置照旧）', () => {
+test('selectWatchPlan：检测总开关关闭时不盯检测房，但激增需求照常占名额（两个总开关互不牵连）', () => {
   const rooms = [1, 2, 3, 4, 5, 6].map(i => room(i, ON({})));
   const onlineKeys = new Set(rooms.map(r => `douyu_${r.roomId}`));
 
@@ -204,16 +205,68 @@ test('selectWatchPlan：总开关关闭时不盯守也不排队（房间配置�
   assert.equal(on.active.length, 5, '开启时照常盯守');
   assert.equal(on.queued.length, 1, '开启时超出上限的房间排队');
 
-  const off = selectWatchPlan(rooms, onlineKeys, { enabled: false });
-  assert.deepEqual(off.active, [], '关闭时不盯守');
+  const off = selectWatchPlan(rooms, onlineKeys, { watchEnabled: false });
+  assert.deepEqual(off.active, [], '关闭时检测房不盯守');
   assert.deepEqual(off.queued, [], '关闭时也不排队（排队提示随之消失）');
+
+  // 同一批房间改为只开激增：检测总开关关闭不影响它们
+  const surgeRooms = rooms.map(r => ({ ...r, surgeAlert: true }));
+  const surgeOnly = selectWatchPlan(surgeRooms, onlineKeys, { watchEnabled: false });
+  assert.deepEqual(surgeOnly.active.map(e => e.roomId), ['1', '2', '3', '4', '5'], '激增需求照常盯守');
+  assert.equal(surgeOnly.active[0].config, null, '检测总开关关闭时检测配置不参与');
+  assert.equal(surgeOnly.active[0].surge, true);
 });
 
-test('hasConfiguredBiliWatch：总开关关闭时不备 B站通道', () => {
-  const rooms = [room(200, ON({}), 'bilibili')];
-  assert.equal(hasConfiguredBiliWatch(rooms), true, '默认开启时备通道');
-  assert.equal(hasConfiguredBiliWatch(rooms, false), false, '关闭时不备通道');
-  assert.equal(hasConfiguredBiliWatch([], true), false, '无配置房间时不备通道');
+test('selectWatchPlan：只开激增的房间（未配检测词）一样进计划，两种需求按列表顺序共用名额', () => {
+  const rooms = [
+    room(1, ON({})),                        // 检测需求
+    { ...room(2, null), surgeAlert: true }, // 激增需求（未配检测词）
+    room(3, ON({})),                        // 检测需求
+    { ...room(4, null), surgeAlert: true }
+  ];
+  const onlineKeys = new Set(rooms.map(r => `douyu_${r.roomId}`));
+
+  const plan = selectWatchPlan(rooms, onlineKeys, { limit: 3 });
+
+  assert.deepEqual(plan.active.map(e => e.roomId), ['1', '2', '3'], '同一份计划、同一个名额池，按房间列表顺序');
+  assert.deepEqual(plan.active[0], {
+    key: 'douyu_1',
+    platform: 'douyu',
+    roomId: '1',
+    nickname: '主播1',
+    config: normalizeWatch(rooms[0].watch),
+    surge: false
+  }, '检测房条目带归一化配置、激增标记为 false');
+  assert.equal(plan.active[1].config, null, '只为激增盯守的房间检测配置为空');
+  assert.equal(plan.active[1].surge, true);
+  assert.deepEqual(plan.queued.map(e => e.roomId), ['4'], '超出的激增房同样排队');
+});
+
+test('selectWatchPlan：两边总开关都关闭时既不盯守也不排队', () => {
+  const rooms = [{ ...room(1, ON({})), surgeAlert: true }];
+  const onlineKeys = new Set(['douyu_1']);
+
+  const plan = selectWatchPlan(rooms, onlineKeys, { watchEnabled: false, surgeEnabled: false });
+
+  assert.deepEqual(plan.active, []);
+  assert.deepEqual(plan.queued, []);
+});
+
+test('hasBiliWatchNeed：检测或激增任一有需求就备 B站通道，对应总开关关闭时不算该需求', () => {
+  const watchRoom = room(200, ON({}), 'bilibili');
+  const surgeRoom = { ...room(201, null, 'bilibili'), surgeAlert: true };
+
+  assert.equal(hasBiliWatchNeed([watchRoom]), true, '检测需求备通道');
+  assert.equal(hasBiliWatchNeed([surgeRoom]), true, '只开激增、未配检测词也备通道');
+  assert.equal(hasBiliWatchNeed([surgeRoom], { surgeEnabled: false }), false, '激增总开关关闭时不备通道');
+  assert.equal(hasBiliWatchNeed([watchRoom], { watchEnabled: false }), false, '检测总开关关闭时不备通道');
+  assert.equal(
+    hasBiliWatchNeed([watchRoom, surgeRoom], { watchEnabled: false }),
+    true,
+    '检测关闭但激增开着：仍要备通道'
+  );
+  assert.equal(hasBiliWatchNeed([room(1, ON({}), 'douyu')]), false, '斗鱼房间不影响 B站通道决策');
+  assert.equal(hasBiliWatchNeed([]), false, '没有房间时不备通道');
 });
 
 // === 滑动窗口计数与冷却 ===

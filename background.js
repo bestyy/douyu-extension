@@ -8,6 +8,7 @@ importScripts(
   'lib/storage.js',
   'lib/danmaku-watch.js',
   'lib/viewer-alert.js',
+  'lib/danmaku-surge.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
   'lib/douyu-barrage.js',
@@ -58,7 +59,7 @@ const biliBridge = new BiliBridgeChannel({
   isLoggedIn: isBiliLoggedIn
 });
 
-// === 通知 adapter：三种房间通知外形一致（同图标、同「进入直播间」按钮、同优先级）===
+// === 通知 adapter：四种房间通知外形一致（同图标、同「进入直播间」按钮、同优先级）===
 const notifier = {
   async create(notificationId, content) {
     await chrome.notifications.create(notificationId, {
@@ -79,8 +80,9 @@ const notifier = {
 };
 
 // === 弹幕客户端 ===
-// 采样短连与检测长连接各用独立实例（并存属有意设计，见 ADR-0001）：
-// 采样模式解析 oni / ONLINE_RANK_COUNT（观众数），检测模式解析 chatmsg / DANMU_MSG（弹幕文本）。
+// 采样短连与盯守长连接各用独立实例（并存属有意设计，见 ADR-0001）：
+// 采样模式解析 oni / ONLINE_RANK_COUNT（观众数），盯守模式解析 chatmsg / DANMU_MSG（弹幕文本，
+// 同一条长连接同时供给弹幕检测与弹幕激增，见 ADR-0004）。
 // 客户端回调指向编排，故先建 clients 壳、构造编排，再回填实例。
 const clients = {};
 const orchestrator = createOrchestrator({
@@ -98,8 +100,11 @@ const orchestrator = createOrchestrator({
     isDanmakuWatchEnabled,
     matchKeyword,
     selectWatchPlan,
-    hasConfiguredBiliWatch,
-    DanmakuWatchCounter
+    hasBiliWatchNeed,
+    DanmakuWatchCounter,
+    isSurgeAlertEnabled,
+    normalizeSurgeSettings,
+    SurgeMeter
   },
   alarms: chrome.alarms,
   tabs: { create: props => chrome.tabs.create(props) }

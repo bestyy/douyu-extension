@@ -123,12 +123,12 @@ test('sync：观众数开关关闭且无检测需求 → 停用通道并关桥�
   assert.equal(tabs.tabs.length, 0, '桥接页被关');
 });
 
-test('sync：观众数开关关闭但有检测需求 → 通道继续按登录态决策（检测与观众数正交）', async () => {
+test('sync：观众数开关关闭但有盯守需求 → 通道继续按登录态决策（盯守与观众数正交）', async () => {
   const storage = createFakeStorage({});
   const tabs = createFakeTabs();
 
   const ch = makeChannel(storage, tabs, { isLoggedIn: async () => true });
-  await ch.sync({ danmakuWatch: true, viewerEnabled: false, hasBiliRoom: true });
+  await ch.sync({ watchNeed: true, viewerEnabled: false, hasBiliRoom: true });
 
   assert.equal(ch.enabled, true);
   assert.equal(storage.store.biliPageChannelEnabled, true);

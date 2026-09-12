@@ -18,6 +18,7 @@ const LIB_FILES = [
   'storage',
   'danmaku-watch',
   'viewer-alert',
+  'danmaku-surge',
   'douyu-api',
   'bilibili-api',
   'douyu-barrage',
@@ -56,6 +57,7 @@ function createChromeStub() {
     },
     alarms: {
       create: (name, info) => alarms.push({ name, info: clone(info) }),
+      clear: () => { },
       onAlarm: { addListener: fn => listeners.alarm.push(fn) }
     },
     notifications: {
@@ -147,12 +149,13 @@ test('消息接线：编排应答，未知消息回 ok:false；设置变更按�
   assert.equal(stub.alarms.find(a => a.name === 'refreshRooms').info.periodInMinutes, 2);
 });
 
-test('alarm 接线：名字映射到轮询，失败不抛出', async () => {
+test('alarm 接线：名字映射到轮询 / 采样 / 激增结算，失败不抛出', async () => {
   const stub = createChromeStub();
   loadEntry(stub.chrome);
   const fire = name => Promise.all(stub.listeners.alarm.map(fn => fn({ name })));
   await fire('refreshRooms');
   await fire('sampleViewerCounts');
+  await fire('danmakuSurgeTick');
   await tick();
 });
 

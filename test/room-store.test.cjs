@@ -331,6 +331,24 @@ test('patchSettings：refreshInterval 钳到下限，未知键与非法类型忽
   assert.ok(!('watchQueued' in storage.raw().settings), '不是自己的键不写');
 });
 
+test('patchSettings：三个激增数值参数各自钳到范围，非法值忽略', async () => {
+  const { store, storage } = createStore({ settings: {} });
+  await store.patchSettings({
+    surgeMultiple: 99,        // 上限 10
+    surgeMinBaseline: 0,      // 下限 1
+    surgeCooldownMinutes: -5, // 下限 1
+    surgeAlertEnabled: 'yes'  // 非布尔值忽略
+  });
+  assert.equal(storage.raw().settings.surgeMultiple, 10);
+  assert.equal(storage.raw().settings.surgeMinBaseline, 1);
+  assert.equal(storage.raw().settings.surgeCooldownMinutes, 1);
+
+  await store.patchSettings({ surgeMultiple: 'abc', surgeMinBaseline: null });
+  assert.equal(storage.raw().settings.surgeMultiple, 10, '非法值忽略，不把无效输入变成一次重置');
+  assert.equal(storage.raw().settings.surgeMinBaseline, 1);
+  assert.ok(!('surgeAlertEnabled' in storage.raw().settings), '非布尔值不落盘');
+});
+
 test('patchSettings：值没有变化时不写盘', async () => {
   const { store, storage } = createStore({ settings: { notificationsEnabled: true } });
   const result = await store.patchSettings({ notificationsEnabled: true });

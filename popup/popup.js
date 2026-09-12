@@ -106,7 +106,8 @@ function updateMeter(count) {
   el.dataset.lit = count >= 10 ? '4' : count >= 6 ? '3' : count >= 3 ? '2' : count >= 1 ? '1' : '0';
 }
 
-// 弹幕检测排队提示（watchQueued 由轮询收敛点写入）：列出暂未盯守的房间昵称
+// 盯守排队提示（watchQueued 由轮询收敛点写入）：列出暂未盯守的房间昵称。
+// 名额由弹幕检测与弹幕激增共用（见 ADR-0004），故文案不特指某一个功能
 function renderWatchQueue(queued) {
   const hint = document.getElementById('watchQueueHint');
   const list = queued || [];
@@ -115,7 +116,7 @@ function renderWatchQueue(queued) {
     return;
   }
   const names = list.map(q => q.nickname || q.roomId).join('、');
-  hint.textContent = `弹幕检测已满（同时最多 ${WATCH_MAX_CONCURRENT} 个开播房间），排队中：${names}`;
+  hint.textContent = `盯守名额已满（同时最多 ${WATCH_MAX_CONCURRENT} 个开播房间），排队中：${names}`;
   hint.classList.remove('hidden');
 }
 

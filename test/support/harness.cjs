@@ -1,6 +1,6 @@
 // test/support/harness.cjs — 三条链路测试共享的进程内 harness（不再拼接源码进 vm）
 //
-// 组装真实 module：RoomStore + BiliBridgeChannel + createOrchestrator + 两个纯规则 module，
+// 组装真实 module：RoomStore + BiliBridgeChannel + createOrchestrator + 三个纯规则 module，
 // 只把「外部世界」换成内存实现：存储、平台 API、弹幕客户端、通知、alarm、标签页。
 // 默认值与形状从生产 module 导入（RoomStore.DEFAULTS），不再手抄。
 'use strict';
@@ -10,15 +10,18 @@ const { BiliBridgeChannel } = require('../../lib/bili-bridge-channel.js');
 const { createOrchestrator } = require('../../lib/orchestrator.js');
 const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
+const danmakuSurge = require('../../lib/danmaku-surge.js');
 
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
-/** 可调时钟（弹幕检测的窗口与冷却用） */
+/** 可调时钟（弹幕检测的窗口与冷却、弹幕激增的分钟桶都用它） */
 function createClock(t = 0) {
   return {
     t,
     now() { return this.t; },
-    advance(ms) { this.t += ms; }
+    advance(ms) { this.t += ms; },
+    /** 推进 n 分钟（激增的桶宽） */
+    advanceMinutes(n) { this.t += n * 60 * 1000; }
   };
 }
 
@@ -170,12 +173,17 @@ function createHarness(seed = {}, options = {}) {
   const alarms = [];
   const openedTabs = [];
 
-  // 弹幕检测计数用假时钟（编排内部 new rules.DanmakuWatchCounter()，无参构造）
+  // 弹幕检测计数与激增计量都用假时钟（编排内部无参构造两个规则对象，测试用子类注入时钟）
   const Counter = clock
     ? class extends danmakuWatch.DanmakuWatchCounter {
       constructor() { super({ now: () => clock.now() }); }
     }
     : danmakuWatch.DanmakuWatchCounter;
+  const Surge = clock
+    ? class extends danmakuSurge.SurgeMeter {
+      constructor() { super({ now: () => clock.now() }); }
+    }
+    : danmakuSurge.SurgeMeter;
 
   const orchestrator = createOrchestrator({
     store,
@@ -184,8 +192,11 @@ function createHarness(seed = {}, options = {}) {
     clients,
     bridge,
     notifier,
-    rules: { ...viewerAlert, ...danmakuWatch, DanmakuWatchCounter: Counter },
-    alarms: { create: (name, info) => alarms.push({ name, info: clone(info) }) },
+    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+    alarms: {
+      create: (name, info) => alarms.push({ name, info: clone(info) }),
+      clear: () => { } // 端口完整即可：结算节拍本身不是被测行为（见 spec 的测试决策）
+    },
     tabs: { create: props => openedTabs.push(clone(props)) }
   });
 
@@ -219,6 +230,11 @@ async function sample(harness) {
   await harness.orchestrator.onAlarm('sampleViewerCounts');
 }
 
+/** 弹幕激增结算一次（走编排的 alarm 入口，与 poll / sample 同形） */
+async function settleSurge(harness) {
+  await harness.orchestrator.onAlarm('danmakuSurgeTick');
+}
+
 /** SW 唤醒：重建内存态（通道状态 + 盯守配置），生产里由入口在加载时调用 */
 async function boot(harness) {
   await harness.orchestrator.start();
@@ -234,6 +250,7 @@ module.exports = {
   createFakeTabs,
   poll,
   sample,
+  settleSurge,
   boot,
   douyuResult,
   bilibiliResult,
