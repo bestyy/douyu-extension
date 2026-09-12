@@ -213,13 +213,14 @@ body {
 }
 
 /* ===== 分组标题 / 卡片 / 分组说明 ===== */
+/* 左缩进 4px 外边距 + 13px 内边距 = 卡片的 1px 边框 + 16px 内边距，标题与卡片内容对齐 */
 .group-title {
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.01em;
   color: var(--label-2);
   margin: 20px 4px 8px;
-  padding-left: 16px;
+  padding-left: 13px;
 }
 
 .page-head + .group-title { margin-top: 6px; }
@@ -228,7 +229,7 @@ body {
   font-size: 12px;
   color: var(--label-2);
   margin: 8px 4px 0;
-  padding-left: 16px;
+  padding-left: 13px;
 }
 
 .card {
@@ -370,25 +371,34 @@ input[type="number"]:focus,
   color: var(--label-2);
 }
 
-/* ===== 设置行 ===== */
+/* ===== 设置行（左文案 + 右控件：保存提示 / 输入框 / 单位） ===== */
+/* 控件列定宽：单位文案长短不一（倍 / 条/分钟 / 秒），弹性布局会让每行各自贴右、逐行错位 */
 .setting-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px 90px 48px;
+  grid-template-areas: "text tip input unit";
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  column-gap: 8px;
 }
 
-/* 文案占满左侧，控件贴右 */
 .setting-row .row-text {
-  margin-right: auto;
+  grid-area: text;
   padding-right: 8px;
 }
 
-.setting-row input[type="number"] { width: 90px; }
+.setting-row input[type="number"] { grid-area: input; }
 
 .setting-row .unit {
+  grid-area: unit;
   font-size: 12.5px;
   color: var(--label-2);
+}
+
+/* 「已保存」提示占住自己那一列，出现与消失都不挤动输入框 */
+.setting-row .saved-tip {
+  grid-area: tip;
+  justify-self: end;
+  white-space: nowrap;
 }
 
 /* ===== 切换开关（iOS） ===== */
@@ -724,12 +734,6 @@ input[type="number"]:focus,
 
 .saved-tip.hidden {
   display: none;
-}
-
-/* 设置行内的提示用占位隐藏，避免出现/消失时挤动输入框 */
-.setting-row .saved-tip.hidden {
-  display: inline;
-  visibility: hidden;
 }
 
 /* ===== 平台标签（胶囊） ===== */
