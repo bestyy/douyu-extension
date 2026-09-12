@@ -53,7 +53,7 @@ B站弹幕采样的传输方式，取值 `SW 直连` 或 `页面桥接`。登录
 _Avoid_: 平台、渠道
 
 **弹幕客户端 (barrage client)**:
-与平台弹幕服务器建 WebSocket 连接的客户端（`BarrageClient` / `BilibiliBarrageClient`）：采样模式解析 `oni` / `ONLINE_RANK_COUNT` 回调观众数字段，检测模式解析 `chatmsg` / `DANMU_MSG` 回调弹幕文本。两种模式各用独立实例（采样短连与检测长连接并存，见 ADR-0001）。
+与平台弹幕服务器建 WebSocket 连接的客户端（`BarrageClient` / `BilibiliBarrageClient`）：采样模式解析 `oni` / `ONLINE_RANK_COUNT` 回调观众数字段，检测模式解析 `chatmsg` / `DANMU_MSG` 回调弹幕文本（同一条连接同时供给弹幕检测与弹幕激增）。两种模式各用独立实例（采样短连与检测长连接并存，见 ADR-0001）。
 _Avoid_: WS 客户端（弹幕客户端是领域概念，WS 是技术细节）
 
 **检测词 (keyword)**:
@@ -61,7 +61,7 @@ _Avoid_: WS 客户端（弹幕客户端是领域概念，WS 是技术细节）
 _Avoid_: 关键词、关键字、监控词
 
 **弹幕检测 (danmaku watch)**:
-对开启的房间在开播期间保持弹幕长连接、按滑动窗口计数命中、触发后进冷却的 per-room 功能，受全局总开关 `settings.danmakuWatchEnabled` 控制（默认开启；关闭后不再盯守任何房间、不排队、不发检测通知，各房已配的检测词保留）。与开播通知的 `notify` 正交，计数在下播时清空。
+对开启的房间在开播期间保持弹幕长连接、按滑动窗口计数命中、触发后进冷却的 per-room 功能，受全局总开关 `settings.danmakuWatchEnabled` 控制（默认开启；关闭后不再盯守任何房间、不排队、不发检测通知，各房已配的检测词保留）。与开播通知的 `notify` 正交，计数在下播时清空。盯守期间的长连接同时供弹幕激增统计条数，因此两个功能共用同一份盯守名额（见 ADR-0004）。
 _Avoid_: 弹幕监控（监控指轮询开播状态，不是看弹幕文本）、关键词告警
 
 **检测通知 (detection notification)**:
@@ -70,4 +70,12 @@ _Avoid_: 提醒、弹窗、告警
 
 **观众数通知 (viewer alert notification)**:
 观众数越过房间阈值时发的桌面通知（ID 为房间复合键 + `_viewer` 后缀），按房间复用通知 ID 覆盖，不堆积，点击进入直播间。
+_Avoid_: 提醒、弹窗、告警
+
+**弹幕激增提醒 (danmaku surge alert)**:
+某房间的弹幕条数相对该房本场自身的基线突然异常变多时发一条桌面通知的 per-room 功能（`rooms[].surgeAlert`，纯布尔、无 per-room 参数），受全局总开关 `settings.surgeAlertEnabled` 控制（默认开启；关闭后不判定，各房开关保留）。阈值参数是全局的：倍数 `settings.surgeMultiple`、基线门槛 `settings.surgeMinBaseline`、冷却 `settings.surgeCooldownMinutes`。判定数据源是弹幕检测的长连接，所以只在房间开播且排进盯守名额时有效，与弹幕检测共用同一份盯守名额（见 ADR-0004）；基线与冷却在下播时清空，下一场重新积累。与开播通知的 `notify`、弹幕检测的 `watch`、观众数提醒的 `viewerAlert` 相互正交（各自的总开关互不影响）。
+_Avoid_: 热点提醒（热点是推论不是观测）、弹幕量监控（监控指轮询开播状态）
+
+**激增通知 (surge notification)**:
+弹幕激增提醒发出的桌面通知（ID 为房间复合键 + `_surge` 后缀），正文报上一分钟的弹幕条数与平时水位，按房间复用通知 ID 覆盖，不堆积，点击进入直播间。
 _Avoid_: 提醒、弹窗、告警
