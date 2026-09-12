@@ -110,92 +110,66 @@ const BRIDGE_URL = 'https://live.bilibili.com/?dyext=1';
 
 // === 用例 ===
 
-test('sync：关闭 B站观众数开关 → 停用通道、清 streamers 的 rankCount（保留 vipCount）、关桥接页', async () => {
-  const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS, fetchBilibiliViewerCount: false },
-    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }],
-    streamers: [{ roomId: '1', platform: 'bilibili', nickname: '主播', title: 'T', vipCount: 5, rankCount: 3 }],
-    biliPageChannelEnabled: true
-  });
+test('sync：观众数开关关闭且无检测需求 → 停用通道并关桥接页', async () => {
+  const storage = createFakeStorage({ biliPageChannelEnabled: true });
   const tabs = createFakeTabs();
   tabs.addTab(BRIDGE_URL, { respond: () => ({ ok: true }) });
 
   const ch = makeChannel(storage, tabs);
-  await ch.sync();
+  await ch.sync({ viewerEnabled: false, hasBiliRoom: true });
 
   assert.equal(ch.enabled, false);
   assert.equal(storage.store.biliPageChannelEnabled, false);
-  // 只删 B站 rankCount，斗鱼 vipCount 原样保留
-  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'bilibili', nickname: '主播', title: 'T', vipCount: 5 }]);
-  // 桥接页被关
-  assert.equal(tabs.tabs.length, 0);
+  assert.equal(tabs.tabs.length, 0, '桥接页被关');
 });
 
-test('sync：旧总开关 fetchViewerCount=false 回退 → 停用通道、清 rankCount（新字段未写入时）', async () => {
-  const storage = createFakeStorage({
-    settings: { refreshInterval: 60, notificationsEnabled: true, openInCurrentTab: false, fetchViewerCount: false },
-    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }],
-    streamers: [{ roomId: '1', platform: 'bilibili', nickname: '主播', rankCount: 9 }]
-  });
-  const tabs = createFakeTabs();
-
-  const ch = makeChannel(storage, tabs);
-  await ch.sync();
-
-  assert.equal(ch.enabled, false);
-  assert.equal(storage.store.biliPageChannelEnabled, false);
-  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'bilibili', nickname: '主播' }]);
-});
-
-test('sync：无 B站房间 → 停用通道但不清 streamers（斗鱼贵宾数仍有效）', async () => {
-  const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '1', platform: 'douyu', nickname: '主播' }],
-    streamers: [{ roomId: '1', platform: 'douyu', nickname: '主播', vipCount: 5 }]
-  });
-  const tabs = createFakeTabs();
-
-  const ch = makeChannel(storage, tabs);
-  await ch.sync();
-
-  assert.equal(ch.enabled, false);
-  assert.equal(storage.store.biliPageChannelEnabled, false);
-  assert.deepEqual(storage.store.streamers, [{ roomId: '1', platform: 'douyu', nickname: '主播', vipCount: 5 }]);
-});
-
-test('sync：登录态 → 启用页面通道并持久化', async () => {
-  const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }]
-  });
+test('sync：观众数开关关闭但有检测需求 → 通道继续按登录态决策（检测与观众数正交）', async () => {
+  const storage = createFakeStorage({});
   const tabs = createFakeTabs();
 
   const ch = makeChannel(storage, tabs, { isLoggedIn: async () => true });
-  await ch.sync();
+  await ch.sync({ danmakuWatch: true, viewerEnabled: false, hasBiliRoom: true });
+
+  assert.equal(ch.enabled, true);
+  assert.equal(storage.store.biliPageChannelEnabled, true);
+});
+
+test('sync：无 B站房间 → 停用通道并关桥接页', async () => {
+  const storage = createFakeStorage({ biliPageChannelEnabled: true });
+  const tabs = createFakeTabs();
+  tabs.addTab(BRIDGE_URL, { respond: () => ({ ok: true }) });
+
+  const ch = makeChannel(storage, tabs);
+  await ch.sync({ viewerEnabled: true, hasBiliRoom: false });
+
+  assert.equal(ch.enabled, false);
+  assert.equal(storage.store.biliPageChannelEnabled, false);
+  assert.equal(tabs.tabs.length, 0);
+});
+
+test('sync：登录态 → 启用页面通道并持久化', async () => {
+  const storage = createFakeStorage({});
+  const tabs = createFakeTabs();
+
+  const ch = makeChannel(storage, tabs, { isLoggedIn: async () => true });
+  await ch.sync({ viewerEnabled: true, hasBiliRoom: true });
 
   assert.equal(ch.enabled, true);
   assert.equal(storage.store.biliPageChannelEnabled, true);
 });
 
 test('sync：未登录 + 持久化降级标记 → 启用页面通道', async () => {
-  const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }],
-    biliPageChannelEnabled: true
-  });
+  const storage = createFakeStorage({ biliPageChannelEnabled: true });
   const tabs = createFakeTabs();
 
   const ch = makeChannel(storage, tabs);
-  await ch.sync();
+  await ch.sync({ viewerEnabled: true, hasBiliRoom: true });
 
   assert.equal(ch.enabled, true);
 });
 
 test('sync：未登录无标记 + 残留桥接页 → 停用通道并清理页面', async () => {
-  const storage = createFakeStorage({
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '1', platform: 'bilibili', nickname: '主播' }]
-  });
+  const storage = createFakeStorage({});
   const tabs = createFakeTabs();
   tabs.addTab(BRIDGE_URL, { respond: () => ({ ok: true }) });
 
@@ -369,11 +343,11 @@ test('enableFallback：启用页面通道并持久化', async () => {
 });
 
 test('enableFallback：关闭 B站观众数开关时不降级', async () => {
-  const storage = createFakeStorage({ settings: { ...DEFAULT_SETTINGS, fetchBilibiliViewerCount: false } });
+  const storage = createFakeStorage({});
   const tabs = createFakeTabs();
 
   const ch = makeChannel(storage, tabs);
-  await ch.enableFallback();
+  await ch.enableFallback({ viewerEnabled: false });
 
   assert.equal(ch.enabled, false);
   assert.equal(storage.store.biliPageChannelEnabled, undefined, '不应写入降级标记');

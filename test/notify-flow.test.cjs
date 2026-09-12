@@ -1,368 +1,155 @@
-// test/notify-flow.test.cjs — 开播通知链路（background.js refreshRooms → checkNewLiveStreams）行为测试
+// test/notify-flow.test.cjs — 开播通知链路（编排 + 房间库 + 真实规则 module）行为测试
 //
-// 运行：npm test（node --test test/）
-// fake 设施：内存 chrome（storage/alarms/notifications/action/cookies/tabs）+ 可编程 fetch 路由。
-// lib/* 与 background.js 通过 vm context 拼接加载（剥离 importScripts，每用例独立 context）。
+// 运行：npm test（node --test）
+// 覆盖：下播→开播边沿只发一条、持续在线不重复、新场次再发、notify 标记与总开关的静默、
+// 接口失败保留旧态、首启只记录不通知、通知点击进入直播间（含派生 ID）。
 'use strict';
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 
-const ROOT = path.join(__dirname, '..');
+const { createHarness, poll, douyuResult, bilibiliResult } = require('./support/harness.cjs');
 
-// === chrome stub ===
+const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
+const streamer = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, online: false, ...extra });
 
-function createChromeStub() {
-  const store = {};
-  const created = [];
-  const alarmListeners = [];
-  const createdAlarms = [];
+test('斗鱼：下播→开播发一条通知，持续在线不重复，下播后再开播算新场次再发', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { notify: true })],
+    streamers: [streamer('100', 'douyu')]
+  }, { apiResults: { douyu: douyuResult([{ roomId: '100', online: true, title: '在播', category: '游戏', nickname: '昵称100' }]) } });
 
-  const chrome = {
-    storage: {
-      local: {
-        async get(keys) {
-          if (keys === null) return { ...store };
-          const out = {};
-          for (const k of (Array.isArray(keys) ? keys : [keys])) {
-            if (k in store) out[k] = JSON.parse(JSON.stringify(store[k]));
-          }
-          return out;
-        },
-        async set(obj) {
-          for (const [k, v] of Object.entries(obj)) store[k] = JSON.parse(JSON.stringify(v));
-        },
-        async getAll() {
-          return JSON.parse(JSON.stringify(store));
-        }
-      }
-    },
-    alarms: {
-      create(name, info) { createdAlarms.push({ name, info }); },
-      onAlarm: { addListener(cb) { alarmListeners.push(cb); } }
-    },
-    notifications: {
-      create(id, opts) { created.push({ id, opts }); return Promise.resolve(id); },
-      onClicked: { addListener() {} },
-      onButtonClicked: { addListener() {} }
-    },
-    action: {
-      setBadgeText() {},
-      setBadgeBackgroundColor() {}
-    },
-    cookies: {
-      async get() { return null; }
-    },
-    tabs: {
-      async query() { return []; },
-      async create() { return { id: 1 }; },
-      async remove() {},
-      async reload() {},
-      async sendMessage() { throw new Error('no responder'); }
-    },
-    runtime: {
-      onInstalled: { addListener() {} },
-      onMessage: { addListener() {} }
-    },
-    __store: store,
-    __created: created,
-    __alarmListeners: alarmListeners,
-    __createdAlarms: createdAlarms
-  };
-  return chrome;
-}
+  await poll(harness);
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(harness.notifications[0].id, 'douyu_100');
+  assert.equal(harness.notifications[0].content.title, '[斗鱼] 昵称100 开播了！');
+  assert.equal(harness.notifications[0].content.message, '在播');
+  assert.equal(harness.notifications[0].content.contextMessage, '游戏');
+  assert.deepEqual(harness.badge, [1]);
 
-// === 可编程 fetch 路由 ===
-// handlers: [{ match: (url) => bool, respond: (url) => ({ ok, text, json }) }]
-function createFetchStub(handlers) {
-  return async function fetch(url) {
-    for (const h of handlers) {
-      if (h.match(String(url))) return h.respond(String(url));
-    }
-    throw new Error(`unexpected fetch: ${url}`);
-  };
-}
+  await poll(harness);
+  assert.equal(harness.notifications.length, 1, '持续在线不再通知');
 
-function douyuRoomPayload({ online, roomId, nickname = '测试主播', title = '测试标题' }) {
-  return JSON.stringify({
-    room: {
-      room_id: roomId,
-      owner_name: nickname,
-      room_name: title,
-      show_status: online ? 1 : 0,
-      videoLoop: 0,
-      room_src: '',
-      owner_avatar: '',
-      room_biz_all: { hot: 0 },
-      cate_name: '英雄联盟',
-      show_time: '0'
-    }
-  });
-}
-
-function biliInfoPayload({ online, roomId, nickname = 'B站主播' }) {
-  // 注意：调用方走 resp.json()，这里必须返回对象而非 JSON 字符串
-  return {
-    code: 0,
-    data: {
-      room_id: roomId,
-      uid: 42,
-      uname: nickname,
-      title: 'B站标题',
-      live_status: online ? 1 : 0,
-      user_cover: '',
-      face: '',
-      online: 0,
-      parent_area_name: '网游',
-      live_time: '0'
-    }
-  };
-}
-
-const BILI_CARD_OK = {
-  match: u => u.includes('web-interface/card'),
-  respond: () => ({ ok: true, text: async () => '', json: async () => ({ code: 0, data: { card: { name: 'B站主播', face: '' } } }) })
-};
-
-// === 加载 background.js（剥离 importScripts，拼接 lib 源码）===
-// 每个用例独立 vm context，避免全局词法作用域里 const 声明跨用例冲突
-
-function loadBackground(chrome, fetchStub) {
-  const libs = [
-    'lib/storage.js',
-    'lib/danmaku-watch.js',
-    'lib/viewer-alert.js',
-    'lib/douyu-api.js',
-    'lib/bilibili-api.js',
-    'lib/douyu-barrage.js',
-    'lib/bilibili-barrage.js',
-    'lib/bili-bridge-channel.js'
-  ];
-  let src = libs
-    .map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'))
-    .join('\n;\n');
-  const bg = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8')
-    .replace(/^importScripts\([^)]*\);\s*$/gm, '');
-  src += '\n;\n' + bg;
-
-  const sandbox = {
-    chrome,
-    fetch: fetchStub,
-    console,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
-    AbortController,
-    TextEncoder,
-    TextDecoder,
-    URL,
-    URLSearchParams
-  };
-  vm.createContext(sandbox);
-  vm.runInContext(src, sandbox, { filename: 'background-harness.js' });
-  return sandbox;
-}
-
-// 触发一次 refreshRooms（走真实的 onAlarm 监听器，验证接线）
-async function fireAlarm(chrome, name = 'refreshRooms') {
-  assert.ok(chrome.__alarmListeners.length > 0, 'onAlarm 监听器应已注册');
-  for (const cb of chrome.__alarmListeners) {
-    await cb({ name, scheduledTime: Date.now() });
-  }
-}
-
-const DEFAULT_SETTINGS = {
-  refreshInterval: 60,
-  notificationsEnabled: true,
-  openInCurrentTab: false
-};
-
-async function seedStorage(chrome, data) {
-  await chrome.storage.local.set(data);
-}
-
-// === 用例 ===
-
-test('斗鱼房间下播→开播：应创建一条开播通知', async () => {
-  const chrome = createChromeStub();
-  const biliOnline = { online: false };
-  const sandbox = loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: false, roomId: '100' }) })
-    },
-    { match: () => true, respond: () => ({ ok: true, text: async () => '', json: async () => ({ code: -1 }) }) }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: true }],
-    streamers: [],
-    notifiedRooms: []
-  });
-
-  // 第一轮：主播未开播 → 无通知
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, '未开播不应通知');
-
-  // 主播开播，第二轮轮询 → 应通知
-  sandbox.fetch = createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: true, roomId: '100' }) })
-    },
-    { match: () => true, respond: () => ({ ok: true, text: async () => '', json: async () => ({ code: -1 }) }) }
-  ]);
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 1, '开播应通知一次');
-  assert.match(chrome.__created[0].opts.title, /开播了/);
-  assert.equal(chrome.__created[0].id, 'douyu_100');
-
-  // 同一场直播继续轮询 → 不重复通知
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 1, '同场直播不应重复通知');
+  harness.setApiResult('douyu', douyuResult([{ roomId: '100', online: false, nickname: '昵称100' }]));
+  await poll(harness);
+  harness.setApiResult('douyu', douyuResult([{ roomId: '100', online: true, title: '第二场', nickname: '昵称100' }]));
+  await poll(harness);
+  assert.equal(harness.notifications.length, 2, '下播后再开播是新场次');
+  assert.equal(harness.notifications[1].content.message, '第二场');
 });
 
-test('B站房间下播→开播：应创建一条开播通知', async () => {
-  const chrome = createChromeStub();
-  const sandbox = loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('room/v1/Room/get_info'),
-      respond: () => ({ ok: true, text: async () => '', json: async () => biliInfoPayload({ online: false, roomId: '200' }) })
-    },
-    BILI_CARD_OK
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '200', nickname: 'B站主播', platform: 'bilibili', notify: true }],
-    streamers: [],
-    notifiedRooms: []
-  });
+test('B站：开播通知标题带 [B站]，统计文案用高能榜在线数', async () => {
+  const harness = createHarness({
+    rooms: [room('200', 'bilibili', { notify: true })],
+    streamers: [streamer('200', 'bilibili', { rankCount: 12000 })]
+  }, { apiResults: { bilibili: bilibiliResult([{ roomId: '200', online: true, title: '在播', category: '虚拟主播', nickname: '昵称200' }]) } });
 
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, '未开播不应通知');
-
-  sandbox.fetch = createFetchStub([
-    {
-      match: u => u.includes('room/v1/Room/get_info'),
-      respond: () => ({ ok: true, text: async () => '', json: async () => biliInfoPayload({ online: true, roomId: '200' }) })
-    },
-    BILI_CARD_OK
-  ]);
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 1, '开播应通知一次');
-  assert.match(chrome.__created[0].opts.title, /\[B站\]/);
+  await poll(harness);
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(harness.notifications[0].id, 'bilibili_200');
+  assert.equal(harness.notifications[0].content.title, '[B站] 昵称200 开播了！');
+  assert.equal(harness.notifications[0].content.contextMessage, '虚拟主播 · 1.2万 高能榜');
 });
 
-test('房间 notify 标记为 false：开播也不通知（当前设计行为）', async () => {
-  const chrome = createChromeStub();
-  loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: true, roomId: '100' }) })
-    }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: false }],
-    streamers: [],
-    notifiedRooms: []
+test('notify 标记为 false 或字段缺失（旧数据）：开播静默', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { notify: false }), room('101', 'douyu')],
+    streamers: [streamer('100', 'douyu'), streamer('101', 'douyu')]
+  }, {
+    apiResults: { douyu: douyuResult([{ roomId: '100', online: true }, { roomId: '101', online: true }]) }
   });
 
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, 'notify=false 不应通知');
+  await poll(harness);
+  assert.equal(harness.notifications.length, 0);
 });
 
-test('房间缺失 notify 字段（旧版本数据）：开播不通知（静默）', async () => {
-  const chrome = createChromeStub();
-  loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: true, roomId: '100' }) })
-    }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu' }], // 无 notify 字段
-    streamers: [],
-    notifiedRooms: []
-  });
+test('开播通知总开关关闭：不通知（房间标记保留）', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { notify: true })],
+    streamers: [streamer('100', 'douyu')],
+    settings: { notificationsEnabled: false }
+  }, { apiResults: { douyu: douyuResult([{ roomId: '100', online: true }]) } });
 
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, '缺 notify 字段时当前实现不通知');
+  await poll(harness);
+  assert.equal(harness.notifications.length, 0);
+  assert.equal(harness.data.rooms[0].notify, true);
 });
 
-test('API 全部失败：保留旧状态，开播也永远不通知（静默失效）', async () => {
-  const chrome = createChromeStub();
-  const sandbox = loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: false, roomId: '100' }) })
-    }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: true }],
-    streamers: [],
-    notifiedRooms: []
-  });
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0);
+test('接口失败：保留旧在线态、静默失效（不误报开播）', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { notify: true })],
+    streamers: [streamer('100', 'douyu', { online: false })]
+  }, { apiResults: { douyu: { success: false, data: [] } } });
 
-  // 之后 API 被风控/改版，返回 HTML（现实中斗鱼 /betard 反爬的典型表现）
-  sandbox.fetch = createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => '<html>请开启 JavaScript</html>' })
-    }
-  ]);
-  await fireAlarm(chrome);
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, 'API 失败期间不应通知');
-  const streamers = chrome.__store.streamers;
-  assert.equal(streamers[0].online, false, 'API 失败应保留旧的离线状态（主播实际已开播也感知不到）');
+  await poll(harness);
+  assert.equal(harness.notifications.length, 0);
+  assert.equal(harness.data.streamers[0].online, false, '失败保留旧状态');
 });
 
-test('notificationsEnabled 关闭：开播不通知', async () => {
-  const chrome = createChromeStub();
-  loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: true, roomId: '100' }) })
-    }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS, notificationsEnabled: false },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: true }],
-    streamers: [],
-    notifiedRooms: []
-  });
-
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, '总开关关闭不应通知');
-});
-
-test('首次运行：已在线房间只记录不通知', async () => {
-  const chrome = createChromeStub();
-  loadBackground(chrome, createFetchStub([
-    {
-      match: u => u.includes('www.douyu.com/betard/100'),
-      respond: () => ({ ok: true, text: async () => douyuRoomPayload({ online: true, roomId: '100' }) })
-    }
-  ]));
-  await seedStorage(chrome, {
-    settings: { ...DEFAULT_SETTINGS },
-    rooms: [{ roomId: '100', nickname: '测试主播', platform: 'douyu', notify: true }],
-    streamers: [],
-    notifiedRooms: [],
+test('首次运行：已在线房间只记入 notifiedRooms 不通知，并清掉首启标记', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { notify: true }), room('101', 'douyu', { notify: true })],
+    streamers: [streamer('100', 'douyu'), streamer('101', 'douyu')],
     _firstRun: true
+  }, {
+    apiResults: { douyu: douyuResult([{ roomId: '100', online: true }, { roomId: '101', online: false }]) }
   });
 
-  await fireAlarm(chrome);
-  assert.equal(chrome.__created.length, 0, '首次运行不通知');
-  assert.equal(chrome.__store._firstRun, null, '首跑标记应清除');
-  assert.ok(chrome.__store.notifiedRooms.some(n => n.roomId === '100'), '在线房间应记入 notifiedRooms');
+  await poll(harness);
+  assert.equal(harness.notifications.length, 0);
+  assert.deepEqual(harness.data.notifiedRooms, [{ roomId: '100', platform: 'douyu' }]);
+  assert.equal(harness.data._firstRun, null);
+});
+
+test('通知点击进入直播间：开播通知与派生 ID 各自解析到同一房间', async () => {
+  const harness = createHarness({ rooms: [room('100', 'douyu')] });
+  for (const id of ['douyu_100', 'douyu_100_watch', 'douyu_100_viewer']) {
+    await harness.orchestrator.onNotificationClicked(id);
+  }
+  await harness.orchestrator.onNotificationClicked('bilibili_200_viewer');
+  assert.deepEqual(harness.openedTabs.map(t => t.url), [
+    'https://www.douyu.com/100',
+    'https://www.douyu.com/100',
+    'https://www.douyu.com/100',
+    'https://live.bilibili.com/200'
+  ]);
+});
+
+test('新增房间先记为已通知：添加后第一轮轮询不把它当成新开播', async () => {
+  const harness = createHarness({ rooms: [], streamers: [] }, {
+    resolve: { douyu: { success: true, nickname: '新主播' } },
+    apiResults: { douyu: douyuResult([{ roomId: '300', online: true, title: '在播' }]) }
+  });
+
+  const added = await harness.orchestrator.handleAddRoom('300', 'douyu');
+  assert.equal(added.ok, true);
+  assert.equal(added.nickname, '新主播');
+  assert.equal(harness.notifications.length, 0, '新加入且已在线的房间不报开播');
+  // 新房间 notify 默认关闭，轮询收敛时 notifiedRooms 只保留「在线且有通知标记」的房间
+  assert.deepEqual(harness.data.notifiedRooms, []);
+});
+
+test('轮询按平台分组派发，没有房间的平台不发起请求', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu'), room('200', 'bilibili')],
+    streamers: [streamer('100', 'douyu'), streamer('200', 'bilibili')]
+  }, {
+    apiResults: {
+      douyu: douyuResult([{ roomId: '100', online: false }]),
+      bilibili: bilibiliResult([{ roomId: '200', online: false }])
+    }
+  });
+
+  await poll(harness);
+  assert.deepEqual(harness.apiCalls, [
+    { platform: 'douyu', ids: ['100'] },
+    { platform: 'bilibili', ids: ['200'] }
+  ]);
+});
+
+test('房间列表为空：不发请求、不稳动 lastRefresh', async () => {
+  const harness = createHarness({ rooms: [], streamers: [] });
+  await poll(harness);
+  assert.deepEqual(harness.apiCalls, []);
+  assert.equal('lastRefresh' in harness.data, false);
 });

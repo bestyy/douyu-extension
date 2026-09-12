@@ -1,7 +1,26 @@
 // options/options.js — 设置页逻辑（房间号管理版）
+//
+// 单写者（见 docs/adr/0003-room-store-single-writer.md）：页面只读房间库的只读快照，
+// 变更一律发消息给 SW（PATCH_SETTINGS / PATCH_ROOM_CONFIG / REORDER_ROOMS），页面不写 storage。
+
+const roomStore = new RoomStore({
+  storage: {
+    get: keys => chrome.storage.local.get(keys),
+    set: entries => chrome.storage.local.set(entries)
+  }
+});
+
+/** 设置变更：落盘、重建轮询 alarm、重算通道与盯守都在 SW 侧完成 */
+async function patchSettings(patch) {
+  return await chrome.runtime.sendMessage({ type: 'PATCH_SETTINGS', patch });
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const data = await chrome.storage.local.get(null);
+  const [snapshot, legacy] = await Promise.all([
+    roomStore.snapshot(),
+    chrome.storage.local.get('cookie') // 旧版 Cookie 配置：只用于迁移提示
+  ]);
+  const settings = snapshot.settings; // 快照已补全缺省值、把平台开关解算成布尔
 
   const roomIdInput = document.getElementById('roomIdInput');
   const addRoomBtn = document.getElementById('addRoomBtn');
@@ -16,32 +35,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
   // 加载现有设置
-  if (data.settings?.refreshInterval) {
-    refreshInterval.value = data.settings.refreshInterval;
-  }
-  if (data.settings?.notificationsEnabled !== undefined) {
-    notificationsEnabled.checked = data.settings.notificationsEnabled;
-  }
-  danmakuWatchEnabled.checked = isDanmakuWatchEnabled(data.settings);
-  viewerAlertEnabled.checked = isViewerAlertEnabled(data.settings);
-  // 观众数开关（v1.x 起按平台拆分）：新字段优先，未写入时回退旧总开关 fetchViewerCount 语义
-  fetchDouyuViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchDouyuViewerCount');
-  fetchBilibiliViewerCount.checked = viewerToggleEnabled(data.settings, 'fetchBilibiliViewerCount');
+  refreshInterval.value = settings.refreshInterval;
+  notificationsEnabled.checked = settings.notificationsEnabled;
+  danmakuWatchEnabled.checked = isDanmakuWatchEnabled(settings);
+  viewerAlertEnabled.checked = isViewerAlertEnabled(settings);
+  fetchDouyuViewerCount.checked = settings.fetchDouyuViewerCount;
+  fetchBilibiliViewerCount.checked = settings.fetchBilibiliViewerCount;
 
   // Migration check - old cookie config detected
-  if (data.cookie && data.cookie.value && (!data.rooms || data.rooms.length === 0)) {
+  if (legacy.cookie && legacy.cookie.value && snapshot.rooms.length === 0) {
     showStatus(addStatus, '已检测到旧版配置，请添加您要监控的房间号', 'info');
   }
 
   // 渲染房间列表
   async function renderRoomList() {
-    const { rooms = [], streamers = [], settings } = await chrome.storage.local.get(['rooms', 'streamers', 'settings']);
+    const { rooms = [], streamers = [], settings } = await roomStore.snapshot();
     const onlineMap = {};
     streamers.forEach(s => { onlineMap[`${s.platform}_${s.roomId}`] = s.online; });
-    // 观众数采样开关（联动提示用）：按平台取当前生效值
+    // 观众数采样开关（联动提示用）：快照已按平台解算成布尔
     const viewerFetchByPlatform = {
-      douyu: viewerToggleEnabled(settings, 'fetchDouyuViewerCount'),
-      bilibili: viewerToggleEnabled(settings, 'fetchBilibiliViewerCount')
+      douyu: settings.fetchDouyuViewerCount,
+      bilibili: settings.fetchBilibiliViewerCount
     };
 
     // 头部信号条：按在线房间数（1/3/6/10 档）点亮
@@ -187,9 +201,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return; // 值没变就不写盘，也避免重复触发后台同步
     }
     savedInterval = interval;
-    const data = await chrome.storage.local.get('settings');
-    await chrome.storage.local.set({ settings: { ...(data.settings || {}), refreshInterval: interval } });
-    chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' }); // 重建轮询 alarm
+    await patchSettings({ refreshInterval: interval }); // 重建轮询 alarm 与落盘都在 SW 侧
     showIntervalSaved();
   }
 
@@ -203,41 +215,28 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   notificationsEnabled.addEventListener('change', async () => {
-    const data = await chrome.storage.local.get('settings');
-    const settings = data.settings || {};
-    settings.notificationsEnabled = notificationsEnabled.checked;
-    await chrome.storage.local.set({ settings });
+    await patchSettings({ notificationsEnabled: notificationsEnabled.checked });
   });
 
-  // 弹幕检测总开关：即时生效（background 断开会话并清空排队），并重绘房间列表面板内的失效提示
+  // 弹幕检测总开关：即时生效（SW 断开会话并清空排队），并重绘房间列表面板内的失效提示
   danmakuWatchEnabled.addEventListener('change', async () => {
-    const data = await chrome.storage.local.get('settings');
-    const settings = { ...(data.settings || {}), danmakuWatchEnabled: danmakuWatchEnabled.checked };
-    await chrome.storage.local.set({ settings });
+    await patchSettings({ danmakuWatchEnabled: danmakuWatchEnabled.checked });
     await renderRoomList();
-    chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });
   });
 
-  // 观众数提醒总开关：即时生效（background 的判定入口读设置），重绘房间列表面板内的失效提示
+  // 观众数提醒总开关：即时生效（判定入口读设置），重绘房间列表面板内的失效提示
   viewerAlertEnabled.addEventListener('change', async () => {
-    const data = await chrome.storage.local.get('settings');
-    const settings = { ...(data.settings || {}), viewerAlertEnabled: viewerAlertEnabled.checked };
-    await chrome.storage.local.set({ settings });
+    await patchSettings({ viewerAlertEnabled: viewerAlertEnabled.checked });
     await renderRoomList();
   });
 
-  // 观众数开关：即时生效（通知 background 同步弹幕客户端连接）
-  // 两个平台字段同时写入，未改动的平台取 DOM 当前状态；旧总开关一并删除
+  // 观众数开关：即时生效（SW 同步弹幕客户端连接与已存数值的清理）
+  // 两个平台字段同时写入，未改动的平台取 DOM 当前状态；旧总开关由房间库在写入时删除
   async function onViewerToggle() {
-    const data = await chrome.storage.local.get('settings');
-    const nextSettings = {
-      ...(data.settings || {}),
+    await patchSettings({
       fetchDouyuViewerCount: fetchDouyuViewerCount.checked,
       fetchBilibiliViewerCount: fetchBilibiliViewerCount.checked
-    };
-    delete nextSettings.fetchViewerCount;
-    await chrome.storage.local.set({ settings: nextSettings });
-    chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
+    });
     // 采样开关是观众数提醒的联动前提：重绘面板内的「拿不到数值」提示
     await renderRoomList();
   }
@@ -344,47 +343,17 @@ document.addEventListener('DOMContentLoaded', async () => {
           newOrder.splice(insertAt, 0, dragSrc);
         }
 
-        // 从 DOM 顺序提取新 rooms 数组
-        const newRooms = newOrder.map(el => ({
+        // 目标顺序（只发房间身份，不发数据；未列出的房间由房间库按原相对顺序接尾，不会丢）
+        const order = newOrder.map(el => ({
           roomId: el.dataset.roomId,
           platform: el.dataset.platform || 'douyu'
         }));
 
-        // 直接写入 storage
-        const { rooms = [], streamers = [] } = await chrome.storage.local.get(['rooms', 'streamers']);
-
-        // 按新 rooms 顺序重建 rooms 对象（保留 nickname）
-        const roomMap = {};
-        rooms.forEach(r => {
-          roomMap[`${r.platform}_${r.roomId}`] = r;
-        });
-        const updatedRooms = newRooms.map(r => ({
-          ...roomMap[`${r.platform}_${r.roomId}`],
-          roomId: r.roomId,
-          platform: r.platform
-        }));
-
-        // 同步重排 streamers
-        const streamerMap = {};
-        streamers.forEach(s => {
-          streamerMap[`${s.platform}_${s.roomId}`] = s;
-        });
-        const updatedStreamers = [];
-        for (const r of newRooms) {
-          const key = `${r.platform}_${r.roomId}`;
-          if (streamerMap[key]) {
-            updatedStreamers.push(streamerMap[key]);
-          } else {
-            // 保留基本信息，等待下次刷新填充完整数据
-            updatedStreamers.push({ roomId: r.roomId, platform: r.platform, online: false });
-          }
-        }
-
         try {
-          await chrome.storage.local.set({
-            rooms: updatedRooms,
-            streamers: updatedStreamers
-          });
+          const response = await chrome.runtime.sendMessage({ type: 'REORDER_ROOMS', order });
+          if (!response || !response.ok) {
+            throw new Error((response && response.error) || '重排失败');
+          }
         } catch (err) {
           console.error('拖拽排序保存失败:', err);
           // 回滚到原始顺序
@@ -543,7 +512,7 @@ async function saveNotifyPanel(panel) {
   const platform = roomItem.dataset.platform || 'douyu';
 
   const notify = panel.querySelector('.room-notify').checked;
-  let watch = null;
+  let watch; // undefined = 面板没有该控件，不改动
   if (panel.querySelector('.watch-enabled')) {
     const keywordInput = panel.querySelector('.watch-keywords');
     const thresholdInput = panel.querySelector('.watch-threshold');
@@ -567,10 +536,10 @@ async function saveNotifyPanel(panel) {
     cooldownInput.value = watch.cooldownMinutes;
   }
 
-  let viewerAlert = null;
+  let viewerAlert; // undefined = 面板没有该控件，不改动
   if (panel.querySelector('.alert-enabled')) {
     const thresholdInput = panel.querySelector('.alert-threshold');
-    // 数值归一化复用 lib/viewer-alert.js（与 background 判定侧同一套区间与缺省值）
+    // 数值归一化复用 lib/viewer-alert.js（与 SW 判定侧同一套区间与缺省值）
     viewerAlert = {
       enabled: panel.querySelector('.alert-enabled').checked,
       threshold: viewerAlertThreshold({ threshold: thresholdInput.value })
@@ -578,34 +547,21 @@ async function saveNotifyPanel(panel) {
     thresholdInput.value = viewerAlert.threshold; // 回写钳制后的实际生效值
   }
 
-  const { rooms = [] } = await chrome.storage.local.get('rooms');
-  const index = rooms.findIndex(r => r.roomId === roomId && r.platform === platform);
-  if (index === -1) {
+  // 变更经 SW 落到房间库（页面不写 storage）：null 表示清掉该配置槽，undefined 表示不动
+  const patch = { notify };
+  if (watch !== undefined) patch.watch = watch;
+  if (viewerAlert !== undefined) patch.viewerAlert = viewerAlert;
+  const response = await chrome.runtime.sendMessage({
+    type: 'PATCH_ROOM_CONFIG',
+    roomId,
+    platform,
+    patch
+  });
+  if (!response || !response.ok) {
     return; // 房间已被移除：面板随下次渲染消失，不写回
   }
-  const saved = {
-    ...rooms[index],
-    notify,
-    ...(watch ? { watch } : {}),
-    ...(viewerAlert ? { viewerAlert } : {})
-  };
-  const updatedRooms = rooms.slice();
-  updatedRooms[index] = saved;
-  await chrome.storage.local.set({ rooms: updatedRooms });
 
   // 入口按钮高亮 = 该房有生效的通知配置（开播通知开启，或检测已启用且有检测词，或观众数提醒已启用）
-  roomItem.querySelector('.btn-notify').classList.toggle('on', roomNotifyActive(saved));
-  if (watch) {
-    chrome.runtime.sendMessage({ type: 'WATCH_CONFIG_UPDATED' });
-  }
+  roomItem.querySelector('.btn-notify').classList.toggle('on', roomNotifyActive(response.room || {}));
   showPanelSaved(panel);
-}
-
-// 观众数平台开关读取：新字段（fetchDouyuViewerCount / fetchBilibiliViewerCount）优先，
-// 未写入时回退旧总开关 fetchViewerCount 语义（不存在的字段视为开启）
-function viewerToggleEnabled(settings, key) {
-  if (settings?.[key] !== undefined) {
-    return settings[key] !== false;
-  }
-  return settings?.fetchViewerCount !== false;
 }
