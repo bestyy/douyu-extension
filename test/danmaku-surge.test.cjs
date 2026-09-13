@@ -13,7 +13,7 @@ const {
   SURGE_DEFAULTS,
   SURGE_MAX_BUCKETS,
   SURGE_MIN_BUCKETS,
-  clampSurgeInt,
+  clampSurgeNumber,
   normalizeSurgeSettings,
   isSurgeAlertEnabled,
   SurgeMeter
@@ -49,8 +49,8 @@ test('normalizeSurgeSettings：缺省值、字符串解析与范围钳制', () =
   );
   assert.deepEqual(
     normalizeSurgeSettings({ surgeMultiple: 1, surgeMinBaseline: 0, surgeCooldownMinutes: 0 }),
-    { multiple: 2, minBaseline: 1, cooldownMinutes: 1 },
-    '低于下限钳到下限'
+    { multiple: 1.1, minBaseline: 1, cooldownMinutes: 1 },
+    '低于下限钳到下限（倍数 1 是退化值，下限 1.1）'
   );
   assert.deepEqual(
     normalizeSurgeSettings({ surgeMultiple: 99, surgeMinBaseline: 1e6, surgeCooldownMinutes: 999 }),
@@ -62,7 +62,15 @@ test('normalizeSurgeSettings：缺省值、字符串解析与范围钳制', () =
     SURGE_DEFAULTS,
     '非法值取缺省'
   );
-  assert.equal(clampSurgeInt(7.9, [1, 10], 3), 7, '小数取整');
+  assert.equal(clampSurgeNumber(7.9, [1, 10], 3), 7, '小数位的参数取整');
+});
+
+test('normalizeSurgeSettings：倍数支持一位小数，多余的位数截断', () => {
+  assert.equal(normalizeSurgeSettings({ surgeMultiple: 1.5 }).multiple, 1.5, '表单字符串与数字都照收');
+  assert.equal(normalizeSurgeSettings({ surgeMultiple: '1.5' }).multiple, 1.5, '字符串小数照解析');
+  assert.equal(normalizeSurgeSettings({ surgeMultiple: 1.57 }).multiple, 1.5, '第二位小数截断');
+  assert.equal(normalizeSurgeSettings({ surgeMultiple: 1.04 }).multiple, 1.1, '截断后低于下限仍被抬起');
+  assert.equal(clampSurgeNumber(1.55, [1.1, 10], 3, 1), 1.5, '按 decimals 截断');
 });
 
 test('isSurgeAlertEnabled：默认开启，仅显式 false 视为关闭（旧版本无该字段）', () => {
@@ -143,6 +151,23 @@ test('倍数：上桶未达基线的倍数不触发，恰好达到就触发', ()
 
   assert.equal(meter.tick('low', at(11), CONFIG).triggered, false, '29 < 10×3');
   assert.equal(meter.tick('hit', at(11), CONFIG).triggered, true, '恰好 30 = 10×3');
+});
+
+test('倍数支持小数：1.5 倍下基线 10 的阈值是 15 条', () => {
+  const meter = new SurgeMeter();
+  for (const key of ['low', 'hit']) {
+    feedBaseline(meter, key, 10, 10); // 基线 10
+  }
+  feed(meter, 'low', 10, 14); // 1.4 倍
+  feed(meter, 'hit', 10, 15); // 1.5 倍
+
+  const config = { ...CONFIG, multiple: 1.5 };
+  const low = meter.tick('low', at(11), config);
+  const hit = meter.tick('hit', at(11), config);
+
+  assert.equal(low.triggered, false, '14 < 10×1.5 = 15');
+  assert.equal(hit.triggered, true, '恰好 15 = 10×1.5');
+  assert.equal(hit.baseline, 10, '基线仍是中位数，与倍数的小数位无关');
 });
 
 test('基线门槛：基线低于门槛时即使倍数满足也不触发（小体量房间可调低门槛）', () => {

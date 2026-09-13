@@ -349,6 +349,19 @@ test('patchSettings：三个激增数值参数各自钳到范围，非法值忽�
   assert.ok(!('surgeAlertEnabled' in storage.raw().settings), '非布尔值不落盘');
 });
 
+test('patchSettings：倍数支持一位小数，落盘的值与用户填的一致', async () => {
+  const { store, storage } = createStore({ settings: {} });
+
+  await store.patchSettings({ surgeMultiple: 1.5 });
+  assert.equal(storage.raw().settings.surgeMultiple, 1.5, '1.5 不被取整成 1');
+
+  await store.patchSettings({ surgeMultiple: 1.57 });
+  assert.equal(storage.raw().settings.surgeMultiple, 1.5, '第二位小数截断');
+
+  await store.patchSettings({ surgeMultiple: 1 });
+  assert.equal(storage.raw().settings.surgeMultiple, 1.1, '低于下限钳到 1.1（倍数 1 是退化值）');
+});
+
 test('patchSettings：值没有变化时不写盘', async () => {
   const { store, storage } = createStore({ settings: { notificationsEnabled: true } });
   const result = await store.patchSettings({ notificationsEnabled: true });
