@@ -1,4 +1,14 @@
 // popup.js — 弹窗逻辑
+//
+// 单写者（见 docs/adr/0003-room-store-single-writer.md）：弹窗只读房间库的只读快照，
+// 设置变更发消息给 SW（PATCH_SETTINGS），不写 storage。
+
+const roomStore = new RoomStore({
+  storage: {
+    get: keys => chrome.storage.local.get(keys),
+    set: entries => chrome.storage.local.set(entries)
+  }
+});
 
 document.addEventListener('DOMContentLoaded', async () => {
   const streamerList = document.getElementById('streamerList');
@@ -19,11 +29,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // 当前标签页跳转设置
+  // 当前标签页跳转设置：变更经 SW 落到房间库
   document.getElementById('currentTabCheck').addEventListener('change', async (e) => {
-    const { settings } = await chrome.storage.local.get('settings');
-    settings.openInCurrentTab = e.target.checked;
-    await chrome.storage.local.set({ settings });
+    await chrome.runtime.sendMessage({ type: 'PATCH_SETTINGS', patch: { openInCurrentTab: e.target.checked } });
   });
 
   function openOptions() {
@@ -42,7 +50,11 @@ async function loadData() {
   document.getElementById('streamerList').classList.add('hidden');
 
   try {
-    const data = await chrome.storage.local.get(null);
+    const [snapshot, extra] = await Promise.all([
+      roomStore.snapshot(),
+      chrome.storage.local.get(['watchQueued', 'cookie']) // 盯守排队视图与旧版 Cookie 提示不在房间库的键内
+    ]);
+    const data = { ...snapshot, ...extra };
     document.getElementById('loading').classList.add('hidden');
 
     // 弹幕检测排队提示：并发上限已满时，超出的开播房间暂未被盯着
@@ -94,7 +106,8 @@ function updateMeter(count) {
   el.dataset.lit = count >= 10 ? '4' : count >= 6 ? '3' : count >= 3 ? '2' : count >= 1 ? '1' : '0';
 }
 
-// 弹幕检测排队提示（watchQueued 由轮询收敛点写入）：列出暂未盯守的房间昵称
+// 盯守排队提示（watchQueued 由轮询收敛点写入）：列出暂未盯守的房间昵称。
+// 名额由弹幕检测与弹幕激增共用（见 ADR-0004），故文案不特指某一个功能
 function renderWatchQueue(queued) {
   const hint = document.getElementById('watchQueueHint');
   const list = queued || [];
@@ -103,7 +116,7 @@ function renderWatchQueue(queued) {
     return;
   }
   const names = list.map(q => q.nickname || q.roomId).join('、');
-  hint.textContent = `弹幕检测已满（同时最多 ${WATCH_MAX_CONCURRENT} 个开播房间），排队中：${names}`;
+  hint.textContent = `盯守名额已满（同时最多 ${WATCH_MAX_CONCURRENT} 个开播房间），排队中：${names}`;
   hint.classList.remove('hidden');
 }
 
@@ -117,8 +130,8 @@ function renderStreamerList(container, streamers) {
       const url = s.platform === 'bilibili'
         ? `https://live.bilibili.com/${s.roomId}`
         : `https://www.douyu.com/${s.roomId}`;
-      const { settings } = await chrome.storage.local.get('settings');
-      if (settings && settings.openInCurrentTab) {
+      const settings = (await roomStore.snapshot()).settings; // 快照已补全缺省值
+      if (settings.openInCurrentTab) {
         chrome.tabs.update({ url });
       } else {
         chrome.tabs.create({ url });

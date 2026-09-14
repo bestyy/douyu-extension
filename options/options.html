@@ -39,54 +39,111 @@
       <div class="cell-divider"></div>
       <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
     </section>
-    <p class="group-hint">添加要监控的房间号。房间行内可展开「通知设置」：单独开关该房的开播通知，并可配置弹幕检测（开播时自动盯弹幕，检测词在窗口内达到阈值就通知；斗鱼 / B站 支持）</p>
+    <p class="group-hint">添加要监控的房间号；拖动行首手柄可调整顺序。每个房间的开关与参数（开播通知、检测词、提醒阈值、激增开关）在行内「通知设置」里单独配置，弹幕检测与观众数提醒、弹幕激增斗鱼 / B站 均支持</p>
 
-    <h2 class="group-title">刷新设置</h2>
-    <section class="card">
-      <div class="setting-row">
-        <label for="refreshInterval">轮询间隔</label>
-        <input type="number" id="refreshInterval" min="60" value="60" step="30">
-        <span class="unit">秒（最小 60）</span>
-      </div>
-      <div class="cell-divider"></div>
-      <button id="saveSettingsBtn" class="cell-btn">保存设置</button>
-      <div id="settingsStatus" class="status hidden"></div>
-    </section>
-
-    <h2 class="group-title">开播通知（全部房间）</h2>
+    <h2 class="group-title">通知总开关</h2>
     <section class="card">
       <label class="toggle-row">
-        <span>新开播时发送桌面通知</span>
+        <span class="row-text">
+          <span class="row-title">开播通知</span>
+          <span class="row-desc">新开播时发送桌面通知</span>
+        </span>
         <input type="checkbox" id="notificationsEnabled" checked>
       </label>
-    </section>
-    <p class="group-hint">总开关：关闭后所有房间都不发开播通知。单个房间的开关在房间行内的「通知设置」里（弹幕检测通知不受此开关影响）</p>
-
-    <h2 class="group-title">弹幕检测（全部房间）</h2>
-    <section class="card">
+      <div class="cell-divider"></div>
       <label class="toggle-row">
-        <span>命中检测词时发送桌面通知</span>
+        <span class="row-text">
+          <span class="row-title">弹幕检测</span>
+          <span class="row-desc">开播时盯弹幕，窗口内命中检测词达到阈值就通知</span>
+        </span>
         <input type="checkbox" id="danmakuWatchEnabled" checked>
       </label>
+      <div class="cell-divider"></div>
+      <label class="toggle-row">
+        <span class="row-text">
+          <span class="row-title">观众数提醒</span>
+          <span class="row-desc">贵宾数 / 高能榜越过该房阈值时通知</span>
+        </span>
+        <input type="checkbox" id="viewerAlertEnabled" checked>
+      </label>
     </section>
-    <p class="group-hint">总开关：关闭后所有房间都停止盯弹幕（断开检测长连接、清空排队）；各房间行内已配的检测词保留，重新打开即恢复</p>
+    <p class="group-hint">三项都是总开关，关闭后所有房间都不发对应通知；各房已配的检测词与阈值保留，重新打开即恢复。弹幕激增的总开关在下方单独一张卡片里。单个房间的开关与参数在房间行的「通知设置」里（关闭开播通知不影响另外两项）</p>
 
-    <h2 class="group-title">观众数设置</h2>
+    <h2 class="group-title">弹幕激增</h2>
     <section class="card">
       <label class="toggle-row">
-        <span>斗鱼 · 贵宾数</span>
+        <span class="row-text">
+          <span class="row-title">弹幕激增提醒</span>
+          <span class="row-desc">该房弹幕突然比平时多出数倍时通知（复用弹幕检测的盯守连接）</span>
+        </span>
+        <input type="checkbox" id="surgeAlertEnabled" checked>
+      </label>
+      <div class="cell-divider"></div>
+      <div class="setting-row">
+        <label class="row-text" for="surgeMultiple">
+          <span class="row-title">触发倍数</span>
+          <span class="row-desc">上一分钟条数达到平时水位的几倍算激增</span>
+        </label>
+        <input type="number" id="surgeMultiple" step="0.1" value="3">
+        <span class="unit">倍</span>
+      </div>
+      <div class="cell-divider"></div>
+      <div class="setting-row">
+        <label class="row-text" for="surgeMinBaseline">
+          <span class="row-title">基线门槛</span>
+          <span class="row-desc">平时条数低于该值就不参与判定，小体量房间可调低</span>
+        </label>
+        <input type="number" id="surgeMinBaseline" step="1" value="3">
+        <span class="unit">条/分钟</span>
+      </div>
+      <div class="cell-divider"></div>
+      <div class="setting-row">
+        <label class="row-text" for="surgeCooldownMinutes">
+          <span class="row-title">冷却时长</span>
+          <span class="row-desc">触发后多久内不再提醒</span>
+        </label>
+        <input type="number" id="surgeCooldownMinutes" step="1" value="30">
+        <span class="unit">分钟</span>
+        <span class="saved-tip hidden" id="surgeSaved">已保存</span>
+      </div>
+    </section>
+    <p class="group-hint">判定用的是真实弹幕条数：与弹幕检测共用同一条盯守连接与名额（超出的按房间列表顺序排队），因此只开激增、不用先配检测词。每场开播后先积累基线，约 10 分钟后才开始判定——一场不到 15 分钟的房间基本不会触发。单个房间的开关在房间行的「通知设置」里</p>
+
+    <h2 class="group-title">刷新与采样</h2>
+    <section class="card">
+      <div class="setting-row">
+        <label class="row-text" for="refreshInterval">
+          <span class="row-title">轮询间隔</span>
+          <span class="row-desc">开播状态的刷新频率，最小 60 秒</span>
+        </label>
+        <input type="number" id="refreshInterval" min="60" value="60" step="30">
+        <span class="unit">秒</span>
+        <span class="saved-tip hidden" id="intervalSaved">已保存</span>
+      </div>
+      <div class="cell-divider"></div>
+      <label class="toggle-row">
+        <span class="row-text">
+          <span class="row-title">斗鱼 · 贵宾数</span>
+          <span class="row-desc">通过弹幕采样获取贵宾数</span>
+        </span>
         <input type="checkbox" id="fetchDouyuViewerCount" checked>
       </label>
       <div class="cell-divider"></div>
       <label class="toggle-row">
-        <span>B站 · 高能榜在线数</span>
+        <span class="row-text">
+          <span class="row-title">B站 · 高能榜在线数</span>
+          <span class="row-desc">通过弹幕采样获取高能榜在线数</span>
+        </span>
         <input type="checkbox" id="fetchBilibiliViewerCount" checked>
       </label>
     </section>
-    <p class="group-hint">两个开关独立控制，关闭后停止对应平台的观众数采样（每 10 分钟更新一次）</p>
+    <p class="group-hint">两项观众数开关独立控制对应平台的采样（每 10 分钟一次）；关闭后拿不到数值，对应平台的观众数提醒不会触发</p>
   </div>
 
   <script src="../lib/danmaku-watch.js"></script>
+  <script src="../lib/viewer-alert.js"></script>
+  <script src="../lib/danmaku-surge.js"></script>
+  <script src="../lib/room-store.js"></script>
   <script src="options.js"></script>
 </body>
 
