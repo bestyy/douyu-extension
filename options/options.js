@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const surgeMultiple = document.getElementById('surgeMultiple');
   const surgeMinBaseline = document.getElementById('surgeMinBaseline');
   const surgeCooldownMinutes = document.getElementById('surgeCooldownMinutes');
+  const surgeMinBuckets = document.getElementById('surgeMinBuckets');
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
   // 加载现有设置
@@ -44,11 +45,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   danmakuWatchEnabled.checked = isDanmakuWatchEnabled(settings);
   viewerAlertEnabled.checked = isViewerAlertEnabled(settings);
   surgeAlertEnabled.checked = isSurgeAlertEnabled(settings);
-  // 三个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
+  // 四个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
   const surgeSettings = normalizeSurgeSettings(settings);
   surgeMultiple.value = surgeSettings.multiple;
   surgeMinBaseline.value = surgeSettings.minBaseline;
   surgeCooldownMinutes.value = surgeSettings.cooldownMinutes;
+  surgeMinBuckets.value = surgeSettings.minBuckets;
   fetchDouyuViewerCount.checked = settings.fetchDouyuViewerCount;
   fetchBilibiliViewerCount.checked = settings.fetchBilibiliViewerCount;
 
@@ -253,14 +255,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     await renderRoomList();
   });
 
-  // 三个激增判定参数：改动即保存（与页面其余控件一致），失焦/回车时归一化并回写生效值
+  // 四个激增判定参数：改动即保存（与页面其余控件一致），失焦/回车时归一化并回写生效值
   // 取值范围从 lib/danmaku-surge.js 的 SURGE_LIMITS 插进表单，避免与判定侧各写一份
   const surgeSaved = document.getElementById('surgeSaved');
   let surgeTipTimer = null;
   const surgeFields = [
     { input: surgeMultiple, settingKey: 'surgeMultiple', configKey: 'multiple', limits: SURGE_LIMITS.multiple },
     { input: surgeMinBaseline, settingKey: 'surgeMinBaseline', configKey: 'minBaseline', limits: SURGE_LIMITS.minBaseline },
-    { input: surgeCooldownMinutes, settingKey: 'surgeCooldownMinutes', configKey: 'cooldownMinutes', limits: SURGE_LIMITS.cooldownMinutes }
+    { input: surgeCooldownMinutes, settingKey: 'surgeCooldownMinutes', configKey: 'cooldownMinutes', limits: SURGE_LIMITS.cooldownMinutes },
+    { input: surgeMinBuckets, settingKey: 'surgeMinBuckets', configKey: 'minBuckets', limits: SURGE_LIMITS.minBuckets }
   ];
   let savedSurge = normalizeSurgeSettings(settings);
 

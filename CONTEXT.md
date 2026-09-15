@@ -73,7 +73,7 @@ _Avoid_: 提醒、弹窗、告警
 _Avoid_: 提醒、弹窗、告警
 
 **弹幕激增提醒 (danmaku surge alert)**:
-某房间的弹幕条数相对该房本场自身的基线突然异常变多时发一条桌面通知的 per-room 功能（`rooms[].surgeAlert`，纯布尔、无 per-room 参数），受全局总开关 `settings.surgeAlertEnabled` 控制（默认开启；关闭后不判定，各房开关保留）。阈值参数是全局的：倍数 `settings.surgeMultiple`、基线门槛 `settings.surgeMinBaseline`、冷却 `settings.surgeCooldownMinutes`。判定数据源是弹幕检测的长连接，所以只在房间开播且排进盯守名额时有效，与弹幕检测共用同一份盯守名额（见 ADR-0004）；基线与冷却在下播时清空，下一场重新积累。与开播通知的 `notify`、弹幕检测的 `watch`、观众数提醒的 `viewerAlert` 相互正交（各自的总开关互不影响）。
+某房间的弹幕条数相对该房本场自身的基线突然异常变多时发一条桌面通知的 per-room 功能（`rooms[].surgeAlert`，纯布尔、无 per-room 参数），受全局总开关 `settings.surgeAlertEnabled` 控制（默认开启；关闭后不判定，各房开关保留）。阈值参数是全局的：倍数 `settings.surgeMultiple`、基线门槛 `settings.surgeMinBaseline`、冷启动时长 `settings.surgeMinBuckets`（开播后攒够这么多个完整分钟桶才开始判定，防开播爬坡误报）、冷却 `settings.surgeCooldownMinutes`。判定数据源是弹幕检测的长连接，所以只在房间开播且排进盯守名额时有效，与弹幕检测共用同一份盯守名额（见 ADR-0004）；基线与冷却在下播时清空，下一场重新积累。与开播通知的 `notify`、弹幕检测的 `watch`、观众数提醒的 `viewerAlert` 相互正交（各自的总开关互不影响）。
 _Avoid_: 热点提醒（热点是推论不是观测）、弹幕量监控（监控指轮询开播状态）
 
 **激增通知 (surge notification)**:

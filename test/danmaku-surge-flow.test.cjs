@@ -2,7 +2,7 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：只开激增（未配检测词）也建立盯守连接、上桶越过基线数倍触发通知（ID / 标题 / 正文 / 上下文行）、
-// 未打开该房开关不判定、总开关、冷启动、基线门槛、冷却复用同一通知 ID、开播边沿清空、
+// 未打开该房开关不判定、总开关、冷启动、冷启动时长可配、基线门槛、冷却复用同一通知 ID、开播边沿清空、
 // 名额与排队（检测与激增共用池子）、两个功能正交、通知点击进入直播间、轮询收敛点兜底结算。
 // 时间由假时钟驱动（分钟桶），结算走编排的 alarm 入口（settleSurge），与生产同一条路。
 'use strict';
@@ -118,6 +118,24 @@ test('冷启动：不足 10 个完整桶不判定（开播爬坡不算激增）�
   clock.advanceMinutes(1);
   await settleSurge(harness);
   assert.equal(harness.notifications.length, 1, '攒够后同样幅度的上涨就报');
+});
+
+test('冷启动时长可配：调小后更早开始判定，设置经 PATCH_SETTINGS 落到判定侧', async () => {
+  const clock = createClock(0);
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { surgeAlert: true })],
+    streamers: [streamer('100', 'douyu')]
+  }, { clock });
+
+  await poll(harness);
+  await harness.orchestrator.onMessage({ type: 'PATCH_SETTINGS', patch: { surgeMinBuckets: 3 } });
+  await feedMinutes(harness, clock, '100', 3, 10); // 只攒 3 个完整桶
+  await feed(harness, '100', 100);
+  clock.advanceMinutes(1);
+  await settleSurge(harness);
+
+  assert.equal(harness.notifications.length, 1, '冷启动调到 3 分钟：同样的数据不必等 10 个桶');
+  assert.equal(harness.notifications[0].content.contextMessage, '上一分钟 100 条，平时约 10 条');
 });
 
 test('基线门槛：平时水位低于门槛时即使倍数满足也不通知，调低门槛即恢复', async () => {

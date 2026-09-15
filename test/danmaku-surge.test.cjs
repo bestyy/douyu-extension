@@ -2,7 +2,7 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：参数归一化与总开关、分钟桶的时间轴对齐与空分钟补 0、只保留 30 桶、中位数基线、
-// 冷启动、倍数与基线门槛、冷却、一次跨多桶只结算最近的完整桶、未跨桶不结算、reset。
+// 冷启动（含桶数可配）、倍数与基线门槛、冷却、一次跨多桶只结算最近的完整桶、未跨桶不结算、reset。
 // 全部用显式时刻驱动（recordDanmu / tick 都接受 now），不依赖真实时间。
 'use strict';
 
@@ -12,7 +12,6 @@ const assert = require('node:assert/strict');
 const {
   SURGE_DEFAULTS,
   SURGE_MAX_BUCKETS,
-  SURGE_MIN_BUCKETS,
   clampSurgeNumber,
   normalizeSurgeSettings,
   isSurgeAlertEnabled,
@@ -21,7 +20,7 @@ const {
 
 const MIN = 60 * 1000;
 const at = minutes => minutes * MIN; // 第 minutes 分钟的任意时刻
-const CONFIG = { multiple: 3, minBaseline: 3, cooldownMinutes: 30 };
+const CONFIG = { multiple: 3, minBaseline: 3, cooldownMinutes: 30, minBuckets: 10 };
 
 /** 在某分钟内灌 n 条弹幕 */
 function feed(meter, key, minute, n) {
@@ -40,25 +39,30 @@ function feedBaseline(meter, key, minutes, n) {
 // === 参数归一化与总开关 ===
 
 test('normalizeSurgeSettings：缺省值、字符串解析与范围钳制', () => {
-  assert.deepEqual(normalizeSurgeSettings(undefined), { multiple: 3, minBaseline: 3, cooldownMinutes: 30 });
+  assert.deepEqual(
+    normalizeSurgeSettings(undefined),
+    { multiple: 3, minBaseline: 3, cooldownMinutes: 30, minBuckets: 10 }
+  );
   assert.deepEqual(normalizeSurgeSettings({}), SURGE_DEFAULTS, '无字段取缺省');
   assert.deepEqual(
-    normalizeSurgeSettings({ surgeMultiple: '5', surgeMinBaseline: '10', surgeCooldownMinutes: '60' }),
-    { multiple: 5, minBaseline: 10, cooldownMinutes: 60 },
+    normalizeSurgeSettings({
+      surgeMultiple: '5', surgeMinBaseline: '10', surgeCooldownMinutes: '60', surgeMinBuckets: '20'
+    }),
+    { multiple: 5, minBaseline: 10, cooldownMinutes: 60, minBuckets: 20 },
     '表单字符串照解析'
   );
   assert.deepEqual(
-    normalizeSurgeSettings({ surgeMultiple: 1, surgeMinBaseline: 0, surgeCooldownMinutes: 0 }),
-    { multiple: 1.1, minBaseline: 1, cooldownMinutes: 1 },
-    '低于下限钳到下限（倍数 1 是退化值，下限 1.1）'
+    normalizeSurgeSettings({ surgeMultiple: 1, surgeMinBaseline: 0, surgeCooldownMinutes: 0, surgeMinBuckets: 1 }),
+    { multiple: 1.1, minBaseline: 1, cooldownMinutes: 1, minBuckets: 2 },
+    '低于下限钳到下限（倍数 1 是退化值，下限 1.1；冷启动只剩 1 个桶时基线恒为 0，下限 2）'
   );
   assert.deepEqual(
-    normalizeSurgeSettings({ surgeMultiple: 99, surgeMinBaseline: 1e6, surgeCooldownMinutes: 999 }),
-    { multiple: 10, minBaseline: 999, cooldownMinutes: 180 },
-    '高于上限钳到上限'
+    normalizeSurgeSettings({ surgeMultiple: 99, surgeMinBaseline: 1e6, surgeCooldownMinutes: 999, surgeMinBuckets: 1e6 }),
+    { multiple: 10, minBaseline: 999, cooldownMinutes: 180, minBuckets: 30 },
+    '高于上限钳到上限（冷启动上限即每房保留的桶数）'
   );
   assert.deepEqual(
-    normalizeSurgeSettings({ surgeMultiple: 'abc', surgeMinBaseline: NaN, surgeCooldownMinutes: null }),
+    normalizeSurgeSettings({ surgeMultiple: 'abc', surgeMinBaseline: NaN, surgeCooldownMinutes: null, surgeMinBuckets: null }),
     SURGE_DEFAULTS,
     '非法值取缺省'
   );
@@ -122,7 +126,7 @@ test(`只保留最近 ${SURGE_MAX_BUCKETS} 个归档桶：更早的水位不再�
 
 // === 冷启动 ===
 
-test(`冷启动：归档桶不足 ${SURGE_MIN_BUCKETS} 个不裁决，攒够后开始裁决`, () => {
+test(`冷启动：归档桶不足 ${CONFIG.minBuckets} 个不裁决，攒够后开始裁决`, () => {
   const meter = new SurgeMeter();
   feedBaseline(meter, 'k', 8, 10); // 第 0–7 分钟每分钟 10 条
   feed(meter, 'k', 8, 100);        // 开播爬坡：第 8 分钟暴涨
@@ -137,6 +141,25 @@ test(`冷启动：归档桶不足 ${SURGE_MIN_BUCKETS} 个不裁决，攒够后�
 
   assert.equal(warm.bucketCount, 100);
   assert.equal(warm.triggered, true, '样本够了，同样幅度的上涨就报');
+});
+
+test('冷启动桶数是参数：调小后同样的数据更早判定（调大则更晚）', () => {
+  const meter = new SurgeMeter();
+  for (const key of ['strict', 'loose']) {
+    feedBaseline(meter, key, 5, 10); // 5 个归档桶，基线 10
+    feed(meter, key, 5, 100);        // 第 5 分钟爆量
+  }
+
+  assert.equal(
+    meter.tick('strict', at(6), CONFIG).triggered,
+    false,
+    '默认要 10 个桶：5 个样本不足，攒够之前不裁决'
+  );
+  assert.equal(
+    meter.tick('loose', at(6), { ...CONFIG, minBuckets: 5 }).triggered,
+    true,
+    '冷启动调到 5：同一组数据立刻判定（100 ≥ 10×3）'
+  );
 });
 
 // === 倍数与基线门槛 ===

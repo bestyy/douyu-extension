@@ -98,6 +98,15 @@
       </div>
       <div class="cell-divider"></div>
       <div class="setting-row">
+        <label class="row-text" for="surgeMinBuckets">
+          <span class="row-title">冷启动时长</span>
+          <span class="row-desc">开播后先攒够这么多分钟的完整桶才开始判定，调大更能压住开播爬坡的误报</span>
+        </label>
+        <input type="number" id="surgeMinBuckets" step="1" value="10">
+        <span class="unit">分钟</span>
+      </div>
+      <div class="cell-divider"></div>
+      <div class="setting-row">
         <label class="row-text" for="surgeCooldownMinutes">
           <span class="row-title">冷却时长</span>
           <span class="row-desc">触发后多久内不再提醒</span>
@@ -107,7 +116,7 @@
         <span class="saved-tip hidden" id="surgeSaved">已保存</span>
       </div>
     </section>
-    <p class="group-hint">判定用的是真实弹幕条数：与弹幕检测共用同一条盯守连接与名额（超出的按房间列表顺序排队），因此只开激增、不用先配检测词。每场开播后先积累基线，约 10 分钟后才开始判定——一场不到 15 分钟的房间基本不会触发。单个房间的开关在房间行的「通知设置」里</p>
+    <p class="group-hint">判定用的是真实弹幕条数：与弹幕检测共用同一条盯守连接与名额（超出的按房间列表顺序排队），因此只开激增、不用先配检测词。每场开播后先按「冷启动时长」积累基线才开始判定（默认 10 分钟）——一场不到约 15 分钟的房间基本不会触发。单个房间的开关在房间行的「通知设置」里</p>
 
     <h2 class="group-title">刷新与采样</h2>
     <section class="card">

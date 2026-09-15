@@ -331,21 +331,24 @@ test('patchSettings：refreshInterval 钳到下限，未知键与非法类型忽
   assert.ok(!('watchQueued' in storage.raw().settings), '不是自己的键不写');
 });
 
-test('patchSettings：三个激增数值参数各自钳到范围，非法值忽略', async () => {
+test('patchSettings：四个激增数值参数各自钳到范围，非法值忽略', async () => {
   const { store, storage } = createStore({ settings: {} });
   await store.patchSettings({
     surgeMultiple: 99,        // 上限 10
     surgeMinBaseline: 0,      // 下限 1
     surgeCooldownMinutes: -5, // 下限 1
+    surgeMinBuckets: 999,     // 上限 30（即每房保留的桶数）
     surgeAlertEnabled: 'yes'  // 非布尔值忽略
   });
   assert.equal(storage.raw().settings.surgeMultiple, 10);
   assert.equal(storage.raw().settings.surgeMinBaseline, 1);
   assert.equal(storage.raw().settings.surgeCooldownMinutes, 1);
+  assert.equal(storage.raw().settings.surgeMinBuckets, 30);
 
-  await store.patchSettings({ surgeMultiple: 'abc', surgeMinBaseline: null });
+  await store.patchSettings({ surgeMultiple: 'abc', surgeMinBaseline: null, surgeMinBuckets: 1 });
   assert.equal(storage.raw().settings.surgeMultiple, 10, '非法值忽略，不把无效输入变成一次重置');
   assert.equal(storage.raw().settings.surgeMinBaseline, 1);
+  assert.equal(storage.raw().settings.surgeMinBuckets, 2, '低于下限钳到下限');
   assert.ok(!('surgeAlertEnabled' in storage.raw().settings), '非布尔值不落盘');
 });
 
