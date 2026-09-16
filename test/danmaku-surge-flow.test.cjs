@@ -2,8 +2,9 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：只开激增（未配检测词）也建立盯守连接、上桶越过基线数倍触发通知（ID / 标题 / 正文 / 上下文行）、
-// 未打开该房开关不判定、总开关、冷启动、冷启动时长可配、基线门槛、冷却复用同一通知 ID、开播边沿清空、
-// 名额与排队（检测与激增共用池子）、两个功能正交、通知点击进入直播间、轮询收敛点兜底结算。
+// 正文里的样本弹幕（含复读刷屏时只报条数）、未打开该房开关不判定、总开关、冷启动、冷启动时长可配、
+// 基线门槛、冷却复用同一通知 ID、开播边沿清空、名额与排队（检测与激增共用池子）、两个功能正交、
+// 通知点击进入直播间、轮询收敛点兜底结算。
 // 时间由假时钟驱动（分钟桶），结算走编排的 alarm 入口（settleSurge），与生产同一条路。
 'use strict';
 
@@ -17,10 +18,10 @@ const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `�
 const streamer = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, online: true, ...extra });
 const online = (roomId, platform = 'douyu', extra = {}) => ({ roomId, platform, online: true, ...extra });
 
-/** 灌 n 条弹幕（走编排的弹幕入口，与生产的弹幕回调同一条路） */
-async function feed(harness, roomId, n, platform = 'douyu') {
+/** 灌 n 条弹幕（走编排的弹幕入口，与生产的弹幕回调同一条路）；默认文本是复读刷屏，不进样本 */
+async function feed(harness, roomId, n, platform = 'douyu', text = '666') {
   for (let i = 0; i < n; i++) {
-    await harness.orchestrator.handleDanmu(platform, { roomId, text: '666', user: '观众甲' });
+    await harness.orchestrator.handleDanmu(platform, { roomId, text, user: '观众甲' });
   }
 }
 
@@ -50,8 +51,37 @@ test('只开激增、未配检测词：一样建立盯守连接，上桶越过�
   assert.equal(harness.notifications.length, 1);
   assert.equal(harness.notifications[0].id, 'douyu_100_surge');
   assert.equal(harness.notifications[0].content.title, '[斗鱼] 昵称100 弹幕激增！');
-  assert.equal(harness.notifications[0].content.message, '上一分钟 100 条，平时约 10 条', '条数在正文：Windows 上只有正文保证渲染');
+  assert.equal(
+    harness.notifications[0].content.message,
+    '上一分钟 100 条，平时约 10 条',
+    '条数在正文（Windows 上只有正文保证渲染）；这一分钟全是「666」，没有合格样本，因此没有第二行'
+  );
   assert.equal(harness.notifications[0].content.contextMessage, '在播中', '房间标题降为上下文行');
+});
+
+test('激增通知附上该分钟最有内容的一条弹幕：样本弹幕是正文第二行，房间标题仍在上下文行', async () => {
+  const clock = createClock(0);
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { surgeAlert: true })],
+    streamers: [streamer('100', 'douyu', { title: '在播中' })]
+  }, { clock });
+
+  await poll(harness);
+  await feedMinutes(harness, clock, '100', 10, 10); // 平时水位：每分钟 10 条
+  await feed(harness, '100', 96);                    // 上一分钟爆量，主体是复读
+  await feed(harness, '100', 1, 'douyu', '主播唱首歌');
+  await feed(harness, '100', 1, 'douyu', '这波五杀太秀了吧');
+  await feed(harness, '100', 2);
+  clock.advanceMinutes(1);
+  await settleSurge(harness);
+
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(
+    harness.notifications[0].content.message,
+    '上一分钟 100 条，平时约 10 条\n「这波五杀太秀了吧」',
+    '两条候选里取更长的那条；条数与样本弹幕同属正文'
+  );
+  assert.equal(harness.notifications[0].content.contextMessage, '在播中', '房间标题仍在上下文行');
 });
 
 test('未打开该房激增开关：不建连接、灌再多弹幕也不通知', async () => {

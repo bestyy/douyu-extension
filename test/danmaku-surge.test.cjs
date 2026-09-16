@@ -2,7 +2,8 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：参数归一化与总开关、分钟桶的时间轴对齐与空分钟补 0、只保留 30 桶、中位数基线、
-// 冷启动（含桶数可配）、倍数与基线门槛、冷却、一次跨多桶只结算最近的完整桶、未跨桶不结算、reset。
+// 冷启动（含桶数可配）、倍数与基线门槛、冷却、一次跨多桶只结算最近的完整桶、未跨桶不结算、reset、
+// 样本弹幕的评选口径与随桶归档。
 // 全部用显式时刻驱动（recordDanmu / tick 都接受 now），不依赖真实时间。
 'use strict';
 
@@ -15,6 +16,7 @@ const {
   clampSurgeNumber,
   normalizeSurgeSettings,
   isSurgeAlertEnabled,
+  betterDanmuSample,
   SurgeMeter
 } = require('../lib/danmaku-surge.js');
 
@@ -22,10 +24,17 @@ const MIN = 60 * 1000;
 const at = minutes => minutes * MIN; // 第 minutes 分钟的任意时刻
 const CONFIG = { multiple: 3, minBaseline: 3, cooldownMinutes: 30, minBuckets: 10 };
 
-/** 在某分钟内灌 n 条弹幕 */
+/** 在某分钟内灌 n 条弹幕（不带文本：只影响条数） */
 function feed(meter, key, minute, n) {
   for (let i = 0; i < n; i++) {
-    meter.recordDanmu(key, at(minute));
+    meter.recordDanmu(key, { now: at(minute) });
+  }
+}
+
+/** 在某分钟内依次灌这些弹幕文本 */
+function feedTexts(meter, key, minute, texts) {
+  for (const text of texts) {
+    meter.recordDanmu(key, { now: at(minute), text });
   }
 }
 
@@ -262,21 +271,83 @@ test('同一个完整桶不重复裁决；正在积累的桶不评估', () => {
   assert.equal(meter.tick('k', at(10), CONFIG).bucketCount, 10, '第一次结算：裁决刚归档的桶');
   assert.deepEqual(
     meter.tick('k', at(10), CONFIG),
-    { triggered: false, bucketCount: 0, baseline: 0 },
+    { triggered: false, bucketCount: 0, baseline: 0, sample: null },
     '同一个桶已经裁决过，不再重复'
   );
 
   feed(meter, 'k', 10, 500); // 正在积累的桶爆量
   assert.deepEqual(
     meter.tick('k', at(10), CONFIG),
-    { triggered: false, bucketCount: 0, baseline: 0 },
+    { triggered: false, bucketCount: 0, baseline: 0, sample: null },
     '当前这个桶还没结束，不参与评估'
   );
 });
 
 test('没有状态（从未收到弹幕）的房间结算不裁决', () => {
   const meter = new SurgeMeter();
-  assert.deepEqual(meter.tick('none', at(5), CONFIG), { triggered: false, bucketCount: 0, baseline: 0 });
+  assert.deepEqual(meter.tick('none', at(5), CONFIG), { triggered: false, bucketCount: 0, baseline: 0, sample: null });
+});
+
+// === 样本弹幕 ===
+
+test('betterDanmuSample：更长者胜、同长保留先到的、不合格不替换已有样本', () => {
+  const sample = '主播这波操作太秀了吧'; // 10 个字，后面的同长例子也用它对齐长度
+  assert.equal(betterDanmuSample(null, sample), sample, '第一条合格的就成为样本');
+  assert.equal(betterDanmuSample('主播唱首歌', sample), sample, '更长者胜出');
+  assert.equal(betterDanmuSample(sample, '前面那个更好'), sample, '更短的不替换');
+  assert.equal(betterDanmuSample(sample, '差不多的另一条弹幕吧'), sample, '同长保留先到的');
+  assert.equal(betterDanmuSample(sample, '666'), sample, '不合格的候选原样返回已有样本');
+  assert.equal(betterDanmuSample(null, '666'), null, '没有合格候选时样本为 null');
+});
+
+test('样本弹幕的合格线：长度 ≥ 4 且不同字符 ≥ 3（复读刷屏与短句都不算内容）', () => {
+  const meter = new SurgeMeter();
+  feedBaseline(meter, 'k', 10, 10);
+  feedTexts(meter, 'k', 10, [
+    '66666666666666666666', // 够长，但只有一个字符在重复
+    '哈哈哈哈哈哈哈哈哈哈', // 同上
+    '233333333333',         // 两个字符在重复
+    '好活',                 // 说不清内容
+    '前排',
+    '   ',                  // 空白
+    '太秀了太秀了吧'        // 合格的候选：7 个字、4 个不同字符
+  ]);
+
+  const result = meter.tick('k', at(11), CONFIG);
+
+  assert.equal(result.sample, '太秀了太秀了吧', '复读与短句都不参与评选');
+  assert.equal(result.bucketCount, 7);
+});
+
+test('样本弹幕取的是被裁决那一分钟的内容，正在积累的桶不参与', () => {
+  const meter = new SurgeMeter();
+  feedBaseline(meter, 'k', 10, 10);
+  feedTexts(meter, 'k', 10, ['这一分钟在聊比赛']); // 第 10 分钟：被裁决的那一桶
+  feed(meter, 'k', 10, 99);                        // 补足条数（无文本）
+  feedTexts(meter, 'k', 11, ['下播前最后一首歌唱得真好听']); // 第 11 分钟：还在积累
+
+  const result = meter.tick('k', at(11), CONFIG);
+
+  assert.equal(result.triggered, true);
+  assert.equal(result.sample, '这一分钟在聊比赛', '样本必须来自被评估的那个完整桶');
+});
+
+test('样本随桶归档：空白分钟的样本为 null，不会沿用更早的桶', () => {
+  const meter = new SurgeMeter();
+  feedBaseline(meter, 'k', 10, 10);
+  feedTexts(meter, 'k', 10, ['第 10 分钟的弹幕', '第 10 分钟的弹幕']);
+  feedTexts(meter, 'k', 12, ['第 12 分钟的弹幕']); // 第 11 分钟安静
+
+  const result = meter.tick('k', at(12), CONFIG);
+
+  assert.equal(result.bucketCount, 0, '评估的是安静的第 11 分钟');
+  assert.equal(result.sample, null, '空分钟的样本是 null，不会串到别的桶');
+});
+
+test('样本弹幕的空白折叠：空白不计入长度，换行不会带进通知', () => {
+  assert.equal(betterDanmuSample(null, '  主播好帅  '), '主播好帅', '首尾空白去掉');
+  assert.equal(betterDanmuSample(null, '好 活'), null, '折叠后只有 3 个字符：短句不合格');
+  assert.equal(betterDanmuSample(null, '主播 这个\n操作太秀了'), '主播 这个 操作太秀了', '换行折叠成空格');
 });
 
 // === reset ===
@@ -290,7 +361,7 @@ test('reset：清空该房的桶与冷却（下播 / 停用后重新积累）', 
   meter.reset('k');
   assert.deepEqual(
     meter.tick('k', at(12), CONFIG),
-    { triggered: false, bucketCount: 0, baseline: 0 },
+    { triggered: false, bucketCount: 0, baseline: 0, sample: null },
     '状态已清空'
   );
 

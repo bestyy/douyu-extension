@@ -55,6 +55,8 @@ git clone https://github.com/bestyy/douyu-extension.git
 
 弹幕检测示例：给某房配置检测词「组队」「开黑」，阈值 5 条、窗口 5 分钟。开播期间该房弹幕里任一词命中（子串匹配、不区分大小写）累计到 5 条，就发一条通知；之后进入 10 分钟冷却，避免同一波弹幕反复打扰。
 
+弹幕激增通知的正文是两行：第一行报条数（`上一分钟 120 条，平时约 15 条`），第二行附上那一分钟里最长的合格弹幕，用来判断现在在聊什么。刷屏的「666666」「哈哈哈哈」和两三个字的短句会被跳过；如果那一分钟全是复读，就只报条数，不留第二行。
+
 ## 工作原理
 
 - **轮询**：`chrome.alarms` 按设定间隔（默认 60 秒）批量拉取房间状态，合并进本地房间库，检测开播边沿。
@@ -75,7 +77,7 @@ git clone https://github.com/bestyy/douyu-extension.git
 无需构建步骤，源码即产物。测试使用 Node 内置测试运行器：
 
 ```bash
-npm test        # node --test，139 个用例
+npm test        # node --test，150 个用例
 ```
 
 测试在进程内组装真实的房间库、编排与规则模块，只把存储、平台 API、弹幕客户端、通知、alarm、标签页替换成内存实现，覆盖三条通知链路、B 站通道降级、单写者并发与 service worker 入口装配。
@@ -92,7 +94,7 @@ lib/bilibili-barrage.js      B 站弹幕客户端（采样 ONLINE_RANK_COUNT / �
 lib/bili-bridge-channel.js   B 站页面桥接通道（登录态下走页面转发）
 lib/danmaku-watch.js         弹幕检测规则：检测词匹配、滑动窗口计数、盯守名额
 lib/viewer-alert.js          观众数提醒规则：阈值归一化与上升边沿判定
-lib/danmaku-surge.js         弹幕激增规则：分钟桶、基线中位数、冷却
+lib/danmaku-surge.js         弹幕激增规则：分钟桶、基线中位数、样本弹幕、冷却
 options/                     设置页
 popup/                       弹窗
 test/                        node --test 用例与共享 harness
