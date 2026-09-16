@@ -26,8 +26,8 @@ test('斗鱼：越阈发提醒，持续高位不复报，回落后再越阈再�
   assert.equal(harness.notifications.length, 1);
   assert.equal(harness.notifications[0].id, 'douyu_100_viewer');
   assert.equal(harness.notifications[0].content.title, '[斗鱼] 昵称100 贵宾数超过 3000！');
-  assert.equal(harness.notifications[0].content.message, '在播');
-  assert.equal(harness.notifications[0].content.contextMessage, '当前 5000 贵宾');
+  assert.equal(harness.notifications[0].content.message, '当前 5000 贵宾', '数值在正文：Windows 上只有正文保证渲染');
+  assert.equal(harness.notifications[0].content.contextMessage, '在播', '房间标题降为上下文行');
 
   await harness.orchestrator.onViewerCount('douyu', { roomId: '100', value: 6000 });
   assert.equal(harness.notifications.length, 1, '持续高位不复报');
@@ -107,6 +107,8 @@ test('B站：两轮确认离线清空存量后，第二场重新越阈能再提�
   await harness.orchestrator.onViewerCount('bilibili', { roomId: '200', value: 5000 });
   assert.equal(harness.notifications.length, 2, '第二场重新武装后再提醒');
   assert.equal(harness.notifications[1].content.title, '[B站] 昵称200 高能榜在线数超过 3000！');
+  assert.equal(harness.notifications[1].content.message, '当前 5000 高能榜', 'B站指标文案同样进正文');
+  assert.equal(harness.notifications[1].content.contextMessage, '第二场');
 });
 
 test('单次 API 抖动（一轮误报离线）：不清存量、同场不重复提醒', async () => {

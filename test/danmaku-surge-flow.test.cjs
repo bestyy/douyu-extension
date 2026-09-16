@@ -50,8 +50,8 @@ test('只开激增、未配检测词：一样建立盯守连接，上桶越过�
   assert.equal(harness.notifications.length, 1);
   assert.equal(harness.notifications[0].id, 'douyu_100_surge');
   assert.equal(harness.notifications[0].content.title, '[斗鱼] 昵称100 弹幕激增！');
-  assert.equal(harness.notifications[0].content.message, '在播中', '正文用房间标题');
-  assert.equal(harness.notifications[0].content.contextMessage, '上一分钟 100 条，平时约 10 条');
+  assert.equal(harness.notifications[0].content.message, '上一分钟 100 条，平时约 10 条', '条数在正文：Windows 上只有正文保证渲染');
+  assert.equal(harness.notifications[0].content.contextMessage, '在播中', '房间标题降为上下文行');
 });
 
 test('未打开该房激增开关：不建连接、灌再多弹幕也不通知', async () => {
@@ -135,7 +135,7 @@ test('冷启动时长可配：调小后更早开始判定，设置经 PATCH_SETT
   await settleSurge(harness);
 
   assert.equal(harness.notifications.length, 1, '冷启动调到 3 分钟：同样的数据不必等 10 个桶');
-  assert.equal(harness.notifications[0].content.contextMessage, '上一分钟 100 条，平时约 10 条');
+  assert.equal(harness.notifications[0].content.message, '上一分钟 100 条，平时约 10 条');
 });
 
 test('基线门槛：平时水位低于门槛时即使倍数满足也不通知，调低门槛即恢复', async () => {
@@ -157,7 +157,7 @@ test('基线门槛：平时水位低于门槛时即使倍数满足也不通知�
   clock.advanceMinutes(1);
   await settleSurge(harness);
   assert.equal(harness.notifications.length, 1, '门槛调到 1 后同样的房间也报（不按体量歧视）');
-  assert.equal(harness.notifications[0].content.contextMessage, '上一分钟 30 条，平时约 2 条');
+  assert.equal(harness.notifications[0].content.message, '上一分钟 30 条，平时约 2 条');
 });
 
 test('冷却：冷却内不再通知（同一房间复用同一条通知 ID），冷却结束后可以再报', async () => {
@@ -244,7 +244,7 @@ test('开播边沿：下播断开连接并清空桶与冷却，重新开播后�
   clock.advanceMinutes(1);
   await settleSurge(harness);
   assert.equal(harness.notifications.length, 2, '重新攒够 10 个桶后再报（冷却没有跨场残留）');
-  assert.equal(harness.notifications[1].content.message, '第二场');
+  assert.equal(harness.notifications[1].content.contextMessage, '第二场');
 });
 
 test('名额与排队：超过上限的房间不建连接、不判定，并在 watchQueued 提示；释放名额后按列表顺序补位', async () => {
@@ -392,7 +392,7 @@ test('B站：只开激增的房间也备好通道（登录态下发到桥接页�
   assert.equal(harness.notifications.length, 1);
   assert.equal(harness.notifications[0].id, 'bilibili_200_surge');
   assert.equal(harness.notifications[0].content.title, '[B站] 昵称200 弹幕激增！');
-  assert.equal(harness.notifications[0].content.message, 'B站在播');
+  assert.equal(harness.notifications[0].content.contextMessage, 'B站在播');
 });
 
 test('通知点击：激增通知解析回对应平台的直播间地址', async () => {
