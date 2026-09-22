@@ -95,7 +95,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         statusCls = 'unknown';
       }
-      const platformTag = `<span class="platform-tag ${r.platform}">${RoomIdentity.platformLabel(r.platform) || r.platform}</span>`;
+      // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出，
+      // 不回退成斗鱼，也不把原始取值拼进标记里（页面其余动态文本同样经 escapeHtml）
+      const platformTag = RoomIdentity.isPlatform(r.platform)
+        ? `<span class="platform-tag ${r.platform}">${RoomIdentity.platformLabel(r.platform)}</span>`
+        : '<span class="platform-tag">未知平台</span>';
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
           <span class="drag-handle" draggable="false">⠿</span>

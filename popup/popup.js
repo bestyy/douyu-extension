@@ -154,7 +154,10 @@ function renderStreamerList(container, streamers) {
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'streamer-info';
-    const platformTag = `<span class="platform-tag ${s.platform}">${RoomIdentity.platformLabel(s.platform) || s.platform}</span>`;
+    // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出
+    const platformTag = RoomIdentity.isPlatform(s.platform)
+      ? `<span class="platform-tag ${s.platform}">${RoomIdentity.platformLabel(s.platform)}</span>`
+      : '<span class="platform-tag">未知平台</span>';
     // 平台统计：观众数值字段与指标名都取自房间标识 module（斗鱼贵宾数 / B站高能榜在线数），> 0 时显示
     const metric = RoomIdentity.viewerMetric(s.platform);
     const field = RoomIdentity.viewerField(s.platform);
