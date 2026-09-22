@@ -2,12 +2,15 @@
 //
 // 单写者（见 docs/adr/0003-room-store-single-writer.md）：弹窗只读房间库的只读快照，
 // 设置变更发消息给 SW（PATCH_SETTINGS），不写 storage。
+// 房间标识（直播间 URL、平台标签、观众数指标名与存储字段）来自 lib/room-identity.js 的
+// 全局 `RoomIdentity`，弹窗不自己拼字符串，也不自查存储形状（见 CONTEXT.md「房间标识」）。
 
 const roomStore = new RoomStore({
   storage: {
     get: keys => chrome.storage.local.get(keys),
     set: entries => chrome.storage.local.set(entries)
-  }
+  },
+  identity: RoomIdentity
 });
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -127,9 +130,8 @@ function renderStreamerList(container, streamers) {
     const card = document.createElement('div');
     card.className = 'streamer-card';
     card.addEventListener('click', async () => {
-      const url = s.platform === 'bilibili'
-        ? `https://live.bilibili.com/${s.roomId}`
-        : `https://www.douyu.com/${s.roomId}`;
+      const url = RoomIdentity.liveUrl(s);
+      if (!url) return; // 未知平台没有直播间可进（房间库产出的条目不会是这种，防御性忽略）
       const settings = (await roomStore.snapshot()).settings; // 快照已补全缺省值
       if (settings.openInCurrentTab) {
         chrome.tabs.update({ url });
@@ -152,13 +154,14 @@ function renderStreamerList(container, streamers) {
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'streamer-info';
-    const platformTag = s.platform === 'bilibili'
-      ? '<span class="platform-tag bilibili">B站</span>'
-      : '<span class="platform-tag douyu">斗鱼</span>';
-    // 平台统计：斗鱼显示贵宾数（弹幕推送 oni 消息），B站显示高能榜在线数（弹幕推送 ONLINE_RANK_COUNT），> 0 时显示
-    const statText = s.platform === 'douyu'
-      ? (typeof s.vipCount === 'number' && s.vipCount > 0 ? ` · <span class="stat-num">${formatNumber(s.vipCount)}</span> 贵宾` : '')
-      : (typeof s.rankCount === 'number' && s.rankCount > 0 ? ` · <span class="stat-num">${formatNumber(s.rankCount)}</span> 高能榜` : '');
+    const platformTag = `<span class="platform-tag ${s.platform}">${RoomIdentity.platformLabel(s.platform) || s.platform}</span>`;
+    // 平台统计：观众数值字段与指标名都取自房间标识 module（斗鱼贵宾数 / B站高能榜在线数），> 0 时显示
+    const metric = RoomIdentity.viewerMetric(s.platform);
+    const field = RoomIdentity.viewerField(s.platform);
+    const statValue = field ? s[field] : undefined;
+    const statText = metric && typeof statValue === 'number' && statValue > 0
+      ? ` · <span class="stat-num">${formatNumber(statValue)}</span> ${metric.shortLabel}`
+      : '';
     infoDiv.innerHTML = `
       <div class="streamer-name">${platformTag}${escapeHtml(s.nickname)}</div>
       <div class="streamer-title">${escapeHtml(s.title || '正在直播')}</div>

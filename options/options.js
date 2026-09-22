@@ -2,12 +2,15 @@
 //
 // 单写者（见 docs/adr/0003-room-store-single-writer.md）：页面只读房间库的只读快照，
 // 变更一律发消息给 SW（PATCH_SETTINGS / PATCH_ROOM_CONFIG / REORDER_ROOMS），页面不写 storage。
+// 房间标识（复合键、平台标签、观众数指标文案与开关键）来自 lib/room-identity.js 的全局
+// `RoomIdentity`，页面不自己拼字符串，也不自查存储形状（见 CONTEXT.md「房间标识」）。
 
 const roomStore = new RoomStore({
   storage: {
     get: keys => chrome.storage.local.get(keys),
     set: entries => chrome.storage.local.set(entries)
-  }
+  },
+  identity: RoomIdentity
 });
 
 /** 设置变更：落盘、重建轮询 alarm、重算通道与盯守都在 SW 侧完成 */
@@ -66,14 +69,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.storage.local.get('watchQueued') // 盯守排队视图（SW 侧的键，不归房间库）
     ]);
     const onlineMap = {};
-    streamers.forEach(s => { onlineMap[`${s.platform}_${s.roomId}`] = s.online; });
-    // 观众数采样开关（联动提示用）：快照已按平台解算成布尔
-    const viewerFetchByPlatform = {
-      douyu: settings.fetchDouyuViewerCount,
-      bilibili: settings.fetchBilibiliViewerCount
-    };
+    streamers.forEach(s => { onlineMap[RoomIdentity.roomKey(s)] = s.online; });
     // 因盯守名额满而排队的房间（面板里提示「开了开关却没反应」的原因）
-    const queuedKeys = new Set((extra.watchQueued || []).map(q => `${q.platform}_${q.roomId}`));
+    const queuedKeys = new Set((extra.watchQueued || []).map(q => RoomIdentity.roomKey(q)));
 
     // 头部信号条：按在线房间数（1/3/6/10 档）点亮
     const onlineCount = streamers.filter(s => s.online).length;
@@ -88,7 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     emptyRooms.classList.add('hidden');
 
     roomList.innerHTML = rooms.map(r => {
-      const onlineStatus = onlineMap[`${r.platform}_${r.roomId}`];
+      const onlineStatus = onlineMap[RoomIdentity.roomKey(r)];
       let statusCls;
       if (onlineStatus === true) {
         statusCls = 'online';
@@ -97,14 +95,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         statusCls = 'unknown';
       }
-      const platformLabel = r.platform === 'bilibili'
-        ? '<span class="platform-tag bilibili">B站</span>'
-        : '<span class="platform-tag douyu">斗鱼</span>';
+      const platformTag = `<span class="platform-tag ${r.platform}">${RoomIdentity.platformLabel(r.platform) || r.platform}</span>`;
       return `
         <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
           <span class="drag-handle" draggable="false">⠿</span>
           <span class="status-dot ${statusCls}"></span>
-          ${platformLabel}
+          ${platformTag}
           <span class="room-id">${r.roomId}</span>
           <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
           <button class="btn-notify${roomNotifyActive(r) ? ' on' : ''}" title="该房间的通知设置">通知设置</button>
@@ -113,8 +109,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             watchEnabled: danmakuWatchEnabled.checked,
             alertEnabled: viewerAlertEnabled.checked,
             surgeEnabled: surgeAlertEnabled.checked,
-            viewerFetchEnabled: viewerFetchByPlatform[r.platform] !== false,
-            surgeQueued: queuedKeys.has(`${r.platform}_${r.roomId}`)
+            viewerFetchEnabled: settings[RoomIdentity.viewerToggle(r.platform)] !== false,
+            surgeQueued: queuedKeys.has(RoomIdentity.roomKey(r))
           })}
         </div>
       `;
@@ -126,7 +122,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         e.stopPropagation();
         const roomItem = btn.closest('.room-item');
         const roomId = btn.dataset.roomId;
-        const platform = roomItem.dataset.platform || 'douyu';
+        const platform = roomItem.dataset.platform;
         chrome.runtime.sendMessage({ type: 'REMOVE_ROOM', roomId, platform }, () => {
           renderRoomList();
         });
@@ -152,16 +148,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     initDragAndDrop();
   }
 
-  // 添加房间
+  // 添加房间：房间号与平台都由房间库校验（纯数字校验只有那一个口径），页面只负责空输入提示
   async function handleAddRoom() {
     const roomId = roomIdInput.value.trim();
     const platform = document.getElementById('roomPlatform').value;
     if (!roomId) {
       showStatus(addStatus, '请输入房间号', 'error');
-      return;
-    }
-    if (!/^\d+$/.test(roomId)) {
-      showStatus(addStatus, '房间号必须为纯数字', 'error');
       return;
     }
 
@@ -419,7 +411,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 目标顺序（只发房间身份，不发数据；未列出的房间由房间库按原相对顺序接尾，不会丢）
         const order = newOrder.map(el => ({
           roomId: el.dataset.roomId,
-          platform: el.dataset.platform || 'douyu'
+          platform: el.dataset.platform
         }));
 
         try {
@@ -490,7 +482,7 @@ function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, sur
     : `
       <div class="panel-divider"></div>
       <p class="watch-hint">该平台暂不支持弹幕检测（需要平台弹幕通道，目前仅斗鱼 / B站 支持）</p>`;
-  const alertBlock = VIEWER_METRICS[room.platform]
+  const alertBlock = RoomIdentity.viewerMetric(room.platform)
     ? renderViewerAlertBlock(room.viewerAlert, room.platform, alertEnabled, viewerFetchEnabled)
     : `
       <div class="panel-divider"></div>
@@ -550,11 +542,11 @@ function renderWatchBlock(watch, watchEnabled = true) {
  * @param {boolean} viewerFetchEnabled 该平台观众数采样开关（关闭时提示拿不到数值，联动不生效）
  */
 function renderViewerAlertBlock(alert, platform, alertEnabled = true, viewerFetchEnabled = true) {
-  const meta = VIEWER_METRICS[platform];
+  const meta = RoomIdentity.viewerMetric(platform);
   const enabled = alert?.enabled === true;
   const threshold = viewerAlertThreshold(alert || {});
-  // 指标名取自 meta.label，与「刷新与采样」区块里那条开关的行标题保持同源
-  const platformName = platform === 'bilibili' ? 'B站' : '斗鱼';
+  // 平台名与指标名都取自房间标识 module，与「刷新与采样」区块里那条开关的行标题保持同源
+  const platformName = RoomIdentity.platformLabel(platform);
   const hint = enabled && !alertEnabled
     ? '<p class="watch-hint master-off">观众数提醒总开关已关闭，该房配置暂不生效（在下方「通知总开关」重新打开）</p>'
     : enabled && !viewerFetchEnabled
@@ -614,7 +606,7 @@ function showPanelSaved(panel) {
 async function saveNotifyPanel(panel) {
   const roomItem = panel.closest('.room-item');
   const roomId = roomItem.dataset.roomId;
-  const platform = roomItem.dataset.platform || 'douyu';
+  const platform = roomItem.dataset.platform;
 
   const notify = panel.querySelector('.room-notify').checked;
   let watch; // undefined = 面板没有该控件，不改动

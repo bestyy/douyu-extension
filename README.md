@@ -77,7 +77,7 @@ git clone https://github.com/bestyy/douyu-extension.git
 无需构建步骤，源码即产物。测试使用 Node 内置测试运行器：
 
 ```bash
-npm test        # node --test，150 个用例
+npm test        # node --test，163 个用例
 ```
 
 测试在进程内组装真实的房间库、编排与规则模块，只把存储、平台 API、弹幕客户端、通知、alarm、标签页替换成内存实现，覆盖三条通知链路、B 站通道降级、单写者并发与 service worker 入口装配。
@@ -103,7 +103,7 @@ docs/adr/                    架构决策记录
 CONTEXT.md                   领域术语表
 ```
 
-规则模块（`danmaku-watch` / `viewer-alert` / `danmaku-surge`）是纯计算、不引用 `chrome` 与 WebSocket 的 UMD 模块，service worker 用 `importScripts` 加载、Node 用 `require`、页面当普通 script 引入，因此可以直接在测试里构造。
+规则模块（`danmaku-watch` / `viewer-alert` / `danmaku-surge`）是纯计算、不引用 `chrome` 与 WebSocket 的 UMD 模块，service worker 用 `importScripts` 加载、Node 用 `require`、页面当普通 script 引入，因此可以直接在测试里构造。`room-identity` 同样是零依赖的 UMD 模块，承载房间身份（复合键、房间号校验、平台事实），要求排在所有使用它的 module 之前加载（判据见 `docs/adr/0005`）。
 
 ## 已知限制
 
