@@ -505,7 +505,7 @@ function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, sur
   const surgeBlock = WATCH_PLATFORMS.includes(room.platform)
     ? renderSurgeBlock(room.surgeAlert, surgeEnabled, surgeQueued)
     : '';
-  // 看点与平台无关（只有斗鱼有这个形态的信息），因此平台门用 HIGHLIGHT_PLATFORMS 而不是弹幕通道
+  // 看点不看弹幕通道，只有斗鱼有这个形态的信息：平台门用 HIGHLIGHT_PLATFORMS，不是 WATCH_PLATFORMS
   const highlightBlock = HIGHLIGHT_PLATFORMS.includes(room.platform)
     ? renderHighlightBlock(room.highlightAlert, highlightEnabled)
     : `
