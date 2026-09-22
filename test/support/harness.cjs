@@ -1,6 +1,6 @@
 // test/support/harness.cjs — 三条链路测试共享的进程内 harness（不再拼接源码进 vm）
 //
-// 组装真实 module：RoomStore + BiliBridgeChannel + createOrchestrator + 三个纯规则 module，
+// 组装真实 module：RoomStore + BiliBridgeChannel + createOrchestrator + 四个纯规则 module，
 // 只把「外部世界」换成内存实现：存储、平台 API、弹幕客户端、通知、alarm、标签页。
 // 默认值与形状从生产 module 导入（RoomStore.DEFAULTS），不再手抄。
 'use strict';
@@ -12,6 +12,7 @@ const { RoomIdentity } = require('../../lib/room-identity.js');
 const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
+const highlightAlert = require('../../lib/highlight-alert.js');
 
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
@@ -95,12 +96,12 @@ function createFakeClient() {
 
 /**
  * 组装一个编排实例。
- * @param {object} [seed] rooms / streamers / settings / 其他键（notifiedRooms、_firstRun、watchQueued…）
- * @param {object} [options] apiResults（平台 → {success,data} 或 (ids)=>结果）、resolve（平台 → 昵称解析结果）、
- *                           clock、isLoggedIn
+ * @param {object} [seed] rooms / streamers / settings / 其他键（notifiedRooms、_firstRun、watchQueued、highlightWatermarks…）
+ * @param {object} [options] apiResults（平台 → {success,data} 或 (ids)=>结果）、highlightResults（平台 → {success,data:{highlights}} 或 (roomId)=>结果）、
+ *                           resolve（平台 → 昵称解析结果）、clock、isLoggedIn
  */
 function createHarness(seed = {}, options = {}) {
-  const { apiResults = {}, resolve = {}, clock, isLoggedIn = async () => false } = options;
+  const { apiResults = {}, highlightResults = {}, resolve = {}, clock, isLoggedIn = async () => false } = options;
   // 所有键共用一个内存对象：房间库走多键 port，编排走单键 port
   const data = clone(seed);
 
@@ -122,6 +123,7 @@ function createHarness(seed = {}, options = {}) {
   };
 
   const apiCalls = [];
+  const highlightCalls = [];
   const apis = {};
   for (const platform of ['douyu', 'bilibili']) {
     apis[platform] = {
@@ -130,6 +132,13 @@ function createHarness(seed = {}, options = {}) {
         const result = apiResults[platform];
         if (result === undefined) return { success: true, data: [] };
         return clone(typeof result === 'function' ? result(ids) : result);
+      },
+      // 看点取数（生产里只有斗鱼有这个方法，平台门由编排把关：没通过就不该有调用）
+      async fetchHighlights(roomId) {
+        highlightCalls.push({ platform, roomId });
+        const result = highlightResults[platform];
+        if (result === undefined) return { success: true, data: { highlights: [] } };
+        return clone(typeof result === 'function' ? result(roomId) : result);
       },
       async resolveNickname(roomId) {
         const result = resolve[platform];
@@ -173,6 +182,7 @@ function createHarness(seed = {}, options = {}) {
     setBadge(count) { badge.push(count); }
   };
   const alarms = [];
+  const clearedAlarms = [];
   const openedTabs = [];
 
   // 弹幕检测计数与激增计量都用假时钟（编排内部无参构造两个规则对象，测试用子类注入时钟）
@@ -194,11 +204,11 @@ function createHarness(seed = {}, options = {}) {
     clients,
     bridge,
     notifier,
-    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
     identity: RoomIdentity,
     alarms: {
       create: (name, info) => alarms.push({ name, info: clone(info) }),
-      clear: () => { } // 端口完整即可：结算节拍本身不是被测行为（见 spec 的测试决策）
+      clear: name => { clearedAlarms.push(name); } // 端口完整即可：结算/取数节拍本身不是被测行为（见 spec 的测试决策）
     },
     tabs: { create: props => openedTabs.push(clone(props)) }
   });
@@ -216,10 +226,14 @@ function createHarness(seed = {}, options = {}) {
     notifications,
     badge,
     alarms,
+    clearedAlarms,
     openedTabs,
     apiCalls,
+    highlightCalls,
     /** 让某平台的下一轮轮询返回这些数据 */
-    setApiResult(platform, result) { apiResults[platform] = result; }
+    setApiResult(platform, result) { apiResults[platform] = result; },
+    /** 让某平台的下一轮看点取数返回这些数据 */
+    setHighlightResult(platform, result) { highlightResults[platform] = result; }
   };
 }
 
@@ -238,6 +252,11 @@ async function settleSurge(harness) {
   await harness.orchestrator.onAlarm('danmakuSurgeTick');
 }
 
+/** 看点取数一次（走编排的 alarm 入口，与 poll / sample / settleSurge 同形） */
+async function pollHighlights(harness) {
+  await harness.orchestrator.onAlarm('highlightPoll');
+}
+
 /** SW 唤醒：重建内存态（通道状态 + 盯守配置），生产里由入口在加载时调用 */
 async function boot(harness) {
   await harness.orchestrator.start();
@@ -254,6 +273,7 @@ module.exports = {
   poll,
   sample,
   settleSurge,
+  pollHighlights,
   boot,
   douyuResult,
   bilibiliResult,

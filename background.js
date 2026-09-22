@@ -20,11 +20,13 @@ importScripts(
   'lib/orchestrator.js'
 );
 
-// === 平台 API adapter（轮询取房间信息 + 新增房间时解析昵称）===
+// === 平台 API adapter（轮询取房间信息 + 新增房间时解析昵称 + 看点取数）===
 const apis = {
   douyu: {
     batchFetchRoomInfo: ids => DouyuAPI.batchFetchRoomInfo(ids),
-    resolveNickname: id => DouyuAPI.resolveNickname(id)
+    resolveNickname: id => DouyuAPI.resolveNickname(id),
+    // 看点只有斗鱼有这个形态（HIGHLIGHT_PLATFORMS），B站 adapter 不带这个方法
+    fetchHighlights: id => DouyuAPI.fetchHighlights(id)
   },
   bilibili: {
     batchFetchRoomInfo: ids => BilibiliAPI.batchFetchRoomInfo(ids),
@@ -107,7 +109,10 @@ const orchestrator = createOrchestrator({
     DanmakuWatchCounter,
     isSurgeAlertEnabled,
     normalizeSurgeSettings,
-    SurgeMeter
+    SurgeMeter,
+    HIGHLIGHT_PLATFORMS,
+    isHighlightAlertEnabled,
+    selectNewHighlights
   },
   identity: RoomIdentity,
   alarms: chrome.alarms,
