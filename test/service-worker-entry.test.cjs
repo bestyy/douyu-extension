@@ -20,6 +20,7 @@ const LIB_FILES = [
   'danmaku-watch',
   'viewer-alert',
   'danmaku-surge',
+  'highlight-alert',
   'douyu-api',
   'bilibili-api',
   'douyu-barrage',

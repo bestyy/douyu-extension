@@ -10,6 +10,7 @@ importScripts(
   'lib/danmaku-watch.js',
   'lib/viewer-alert.js',
   'lib/danmaku-surge.js',
+  'lib/highlight-alert.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
   'lib/douyu-barrage.js',
