@@ -39,7 +39,7 @@
       <div class="cell-divider"></div>
       <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
     </section>
-    <p class="group-hint">添加要监控的房间号；拖动行首手柄可调整顺序。每个房间的开关与参数（开播通知、检测词、提醒阈值、激增开关）在行内「通知设置」里单独配置，弹幕检测与观众数提醒、弹幕激增斗鱼 / B站 均支持</p>
+    <p class="group-hint">添加要监控的房间号；拖动行首手柄可调整顺序。每个房间的开关与参数（开播通知、检测词、提醒阈值、激增开关、看点开关）在行内「通知设置」里单独配置，弹幕检测与观众数提醒、弹幕激增斗鱼 / B站 均支持，看点通知仅斗鱼支持</p>
 
     <h2 class="group-title">通知总开关</h2>
     <section class="card">
@@ -67,7 +67,7 @@
         <input type="checkbox" id="viewerAlertEnabled" checked>
       </label>
     </section>
-    <p class="group-hint">三项都是总开关，关闭后所有房间都不发对应通知；各房已配的检测词与阈值保留，重新打开即恢复。弹幕激增的总开关在下方单独一张卡片里。单个房间的开关与参数在房间行的「通知设置」里（关闭开播通知不影响另外两项）</p>
+    <p class="group-hint">三项都是总开关，关闭后所有房间都不发对应通知；各房已配的检测词与阈值保留，重新打开即恢复。弹幕激增与看点通知的总开关在下方各自单独一张卡片里。单个房间的开关与参数在房间行的「通知设置」里（关闭开播通知不影响另外几项）</p>
 
     <h2 class="group-title">弹幕激增</h2>
     <section class="card">
@@ -118,6 +118,18 @@
     </section>
     <p class="group-hint">判定用的是真实弹幕条数：与弹幕检测共用同一条盯守连接与名额（超出的按房间列表顺序排队），因此只开激增、不用先配检测词。每场开播后先按「冷启动时长」积累基线才开始判定（默认 10 分钟）——一场不到约 15 分钟的房间基本不会触发。单个房间的开关在房间行的「通知设置」里</p>
 
+    <h2 class="group-title">看点通知</h2>
+    <section class="card">
+      <label class="toggle-row">
+        <span class="row-text">
+          <span class="row-title">看点通知</span>
+          <span class="row-desc">斗鱼房间出现新看点时通知（看点由平台 AI 事后切出，只有斗鱼有这个形态）</span>
+        </span>
+        <input type="checkbox" id="highlightAlertEnabled" checked>
+      </label>
+    </section>
+    <p class="group-hint">看点由平台事后切出，通知本来就晚于直播画面几分钟；平台也可能长时间不切出新看点——开了开关却长时间没收到通知是正常的，不代表扩展没配好。取数固定 5 分钟一次（不新增连接、不占用弹幕盯守名额），单个房间的开关在房间行的「通知设置」里</p>
+
     <h2 class="group-title">刷新与采样</h2>
     <section class="card">
       <div class="setting-row">
@@ -153,6 +165,7 @@
   <script src="../lib/danmaku-watch.js"></script>
   <script src="../lib/viewer-alert.js"></script>
   <script src="../lib/danmaku-surge.js"></script>
+  <script src="../lib/highlight-alert.js"></script>
   <script src="../lib/room-store.js"></script>
   <script src="options.js"></script>
 </body>

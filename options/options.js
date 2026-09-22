@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const danmakuWatchEnabled = document.getElementById('danmakuWatchEnabled');
   const viewerAlertEnabled = document.getElementById('viewerAlertEnabled');
   const surgeAlertEnabled = document.getElementById('surgeAlertEnabled');
+  const highlightAlertEnabled = document.getElementById('highlightAlertEnabled');
   const surgeMultiple = document.getElementById('surgeMultiple');
   const surgeMinBaseline = document.getElementById('surgeMinBaseline');
   const surgeCooldownMinutes = document.getElementById('surgeCooldownMinutes');
@@ -48,6 +49,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   danmakuWatchEnabled.checked = isDanmakuWatchEnabled(settings);
   viewerAlertEnabled.checked = isViewerAlertEnabled(settings);
   surgeAlertEnabled.checked = isSurgeAlertEnabled(settings);
+  highlightAlertEnabled.checked = isHighlightAlertEnabled(settings);
   // 四个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
   const surgeSettings = normalizeSurgeSettings(settings);
   surgeMultiple.value = surgeSettings.multiple;
@@ -113,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             watchEnabled: danmakuWatchEnabled.checked,
             alertEnabled: viewerAlertEnabled.checked,
             surgeEnabled: surgeAlertEnabled.checked,
+            highlightEnabled: highlightAlertEnabled.checked,
             viewerFetchEnabled: settings[RoomIdentity.viewerToggle(r.platform)] !== false,
             surgeQueued: queuedKeys.has(RoomIdentity.roomKey(r))
           })}
@@ -248,6 +251,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 弹幕激增总开关：即时生效（SW 重算盯守计划与结算 alarm），重绘房间列表面板内的失效提示
   surgeAlertEnabled.addEventListener('change', async () => {
     await patchSettings({ surgeAlertEnabled: surgeAlertEnabled.checked });
+    await renderRoomList();
+  });
+
+  // 看点通知总开关：即时生效（SW 收敛取数 alarm），重绘房间列表面板内的失效提示
+  highlightAlertEnabled.addEventListener('change', async () => {
+    await patchSettings({ highlightAlertEnabled: highlightAlertEnabled.checked });
     await renderRoomList();
   });
 
@@ -456,18 +465,18 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// === 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测 + 观众数提醒 + 弹幕激增）===
-// storage 存用户意图（开播通知开关 + 检测启用开关 + 检测词 + 阈值/窗口/冷却 + 激增开关），
+// === 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测 + 观众数提醒 + 弹幕激增 + 看点通知）===
+// storage 存用户意图（开播通知开关 + 检测启用开关 + 检测词 + 阈值/窗口/冷却 + 激增开关 + 看点开关），
 // 检测配置的归一化在读写两侧都做：读用 lib/danmaku-watch.js 的 normalizeWatch
 // （未启用/无检测词视为未配置），写用同一套归一化后再落盘，用户能直接看到自己的输入被如何处理。
 
 /**
  * 该房是否有生效的通知配置：开播通知开启，或弹幕检测已启用且有检测词，或观众数提醒已启用，
- * 或打开了弹幕激增（入口按钮据此高亮）
+ * 或打开了弹幕激增，或打开了看点通知（入口按钮据此高亮）
  */
 function roomNotifyActive(room) {
   return room.notify === true || !!normalizeWatch(room.watch) || !!normalizeViewerAlert(room.viewerAlert) ||
-    room.surgeAlert === true;
+    room.surgeAlert === true || room.highlightAlert === true;
 }
 
 /**
@@ -477,10 +486,11 @@ function roomNotifyActive(room) {
  * @param {boolean} [state.watchEnabled] 弹幕检测总开关（关闭时面板内提示该房检测暂不生效）
  * @param {boolean} [state.alertEnabled] 观众数提醒总开关（关闭时面板内提示该房提醒暂不生效）
  * @param {boolean} [state.surgeEnabled] 弹幕激增总开关（关闭时面板内提示该房激增暂不生效）
+ * @param {boolean} [state.highlightEnabled] 看点通知总开关（关闭时面板内提示该房看点暂不生效）
  * @param {boolean} [state.viewerFetchEnabled] 该平台观众数采样开关（关闭时提示拿不到数值）
  * @param {boolean} [state.surgeQueued] 该房是否因盯守名额满在排队（开了激增却迟迟不判定的原因）
  */
-function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, surgeEnabled = true, viewerFetchEnabled = true, surgeQueued = false } = {}) {
+function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, surgeEnabled = true, highlightEnabled = true, viewerFetchEnabled = true, surgeQueued = false } = {}) {
   const watchBlock = WATCH_PLATFORMS.includes(room.platform)
     ? renderWatchBlock(room.watch, watchEnabled)
     : `
@@ -495,6 +505,12 @@ function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, sur
   const surgeBlock = WATCH_PLATFORMS.includes(room.platform)
     ? renderSurgeBlock(room.surgeAlert, surgeEnabled, surgeQueued)
     : '';
+  // 看点与平台无关（只有斗鱼有这个形态的信息），因此平台门用 HIGHLIGHT_PLATFORMS 而不是弹幕通道
+  const highlightBlock = HIGHLIGHT_PLATFORMS.includes(room.platform)
+    ? renderHighlightBlock(room.highlightAlert, highlightEnabled)
+    : `
+      <div class="panel-divider"></div>
+      <p class="watch-hint">该平台暂不支持看点通知（看点只有斗鱼有）</p>`;
   return `
     <div class="notify-panel hidden">
       <label class="toggle-row">
@@ -504,6 +520,7 @@ function renderNotifyPanel(room, { watchEnabled = true, alertEnabled = true, sur
       ${watchBlock}
       ${alertBlock}
       ${surgeBlock}
+      ${highlightBlock}
       <span class="saved-tip hidden">已保存</span>
     </div>
   `;
@@ -594,6 +611,27 @@ function renderSurgeBlock(surgeAlert, surgeEnabled = true, surgeQueued = false) 
   `;
 }
 
+/**
+ * 看点通知配置块（只有一个复选框：周期固定 5 分钟、无 per-room 参数）
+ * @param {boolean|undefined} highlightAlert rooms[].highlightAlert（纯布尔，未设置 = 关）
+ * @param {boolean} highlightEnabled 看点通知总开关（关闭且该房已打开时提示暂不生效）
+ */
+function renderHighlightBlock(highlightAlert, highlightEnabled = true) {
+  const enabled = highlightAlert === true;
+  const hint = enabled && !highlightEnabled
+    ? '<p class="watch-hint master-off">看点通知总开关已关闭，该房开关暂不生效（在下方「看点通知」重新打开）</p>'
+    : '';
+  return `
+      <div class="panel-divider"></div>
+      <label class="toggle-row">
+        <span>看点通知</span>
+        <input type="checkbox" class="highlight-enabled"${enabled ? ' checked' : ''}>
+      </label>
+      <p class="watch-hint">该房出现新看点时提醒一次。首次打开只记录当前进度，不会把已有的看点补报一遍；平台长时间不切出新看点时也不会通知（每 5 分钟查一次）。</p>
+      ${hint}
+  `;
+}
+
 const panelSavedTimers = new WeakMap();
 /** 面板内「已保存」提示（短暂显示后自动隐藏） */
 function showPanelSaved(panel) {
@@ -604,8 +642,8 @@ function showPanelSaved(panel) {
 }
 
 /**
- * 保存某房间的通知配置（开播通知 + 弹幕检测 + 观众数提醒 + 弹幕激增）：归一化后写回表单与 storage，
- * 并让 background 立即收敛盯守连接（平台无弹幕通道时面板里没有检测/激增控件，只写 notify）
+ * 保存某房间的通知配置（开播通知 + 弹幕检测 + 观众数提醒 + 弹幕激增 + 看点通知）：归一化后写回表单与 storage，
+ * 并让 background 立即收敛盯守连接与看点取数（平台无控件的项不写，保持原有值）
  */
 async function saveNotifyPanel(panel) {
   const roomItem = panel.closest('.room-item');
@@ -653,11 +691,17 @@ async function saveNotifyPanel(panel) {
     surgeAlert = panel.querySelector('.surge-enabled').checked; // 纯布尔，参数是全局的
   }
 
+  let highlightAlert; // undefined = 面板没有该控件，不改动
+  if (panel.querySelector('.highlight-enabled')) {
+    highlightAlert = panel.querySelector('.highlight-enabled').checked; // 纯布尔，周期是写死的
+  }
+
   // 变更经 SW 落到房间库（页面不写 storage）：null 表示清掉该配置槽，undefined 表示不动
   const patch = { notify };
   if (watch !== undefined) patch.watch = watch;
   if (viewerAlert !== undefined) patch.viewerAlert = viewerAlert;
   if (surgeAlert !== undefined) patch.surgeAlert = surgeAlert;
+  if (highlightAlert !== undefined) patch.highlightAlert = highlightAlert;
   const response = await chrome.runtime.sendMessage({
     type: 'PATCH_ROOM_CONFIG',
     roomId,
@@ -669,7 +713,7 @@ async function saveNotifyPanel(panel) {
   }
 
   // 入口按钮高亮 = 该房有生效的通知配置（开播通知开启，或检测已启用且有检测词，
-  // 或观众数提醒已启用，或打开了弹幕激增）
+  // 或观众数提醒已启用，或打开了弹幕激增，或打开了看点通知）
   roomItem.querySelector('.btn-notify').classList.toggle('on', roomNotifyActive(response.room || {}));
   showPanelSaved(panel);
 }
