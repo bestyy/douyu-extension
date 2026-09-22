@@ -34,6 +34,8 @@ const apis = {
 // === 房间库（rooms / streamers / settings 的形状与全部变更）===
 const roomStore = new RoomStore({
   storage: chromeStoragePort,
+  // 房间标识 module：复合键 / 房间号校验 / 平台事实（零依赖，故它排在所有使用它的 lib 之前）
+  identity: RoomIdentity,
   // 昵称解析 port：把平台 API 的 { success, nickname } 收敛成 { ok, nickname }
   resolveNickname: async (platform, roomId) => {
     const result = await apis[platform].resolveNickname(roomId);
@@ -94,7 +96,6 @@ const orchestrator = createOrchestrator({
   bridge: biliBridge,
   notifier,
   rules: {
-    VIEWER_METRICS,
     isViewerAlertEnabled,
     isViewerAlertCrossed,
     normalizeViewerAlert,
@@ -107,6 +108,7 @@ const orchestrator = createOrchestrator({
     normalizeSurgeSettings,
     SurgeMeter
   },
+  identity: RoomIdentity,
   alarms: chrome.alarms,
   tabs: { create: props => chrome.tabs.create(props) }
 });

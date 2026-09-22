@@ -8,6 +8,7 @@
 const { RoomStore } = require('../../lib/room-store.js');
 const { BiliBridgeChannel } = require('../../lib/bili-bridge-channel.js');
 const { createOrchestrator } = require('../../lib/orchestrator.js');
+const { RoomIdentity } = require('../../lib/room-identity.js');
 const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
@@ -140,6 +141,7 @@ function createHarness(seed = {}, options = {}) {
 
   const store = new RoomStore({
     storage,
+    identity: RoomIdentity,
     resolveNickname: async (platform, roomId) => {
       const result = await apis[platform].resolveNickname(roomId);
       return result && result.success ? { ok: true, nickname: result.nickname } : { ok: false };
@@ -193,6 +195,7 @@ function createHarness(seed = {}, options = {}) {
     bridge,
     notifier,
     rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+    identity: RoomIdentity,
     alarms: {
       create: (name, info) => alarms.push({ name, info: clone(info) }),
       clear: () => { } // 端口完整即可：结算节拍本身不是被测行为（见 spec 的测试决策）

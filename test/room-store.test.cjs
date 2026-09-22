@@ -10,6 +10,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { RoomStore, ROOM_STORE_DEFAULTS } = require('../lib/room-store.js');
+const { RoomIdentity } = require('../lib/room-identity.js');
 
 // === 测试替身：内存存储 port（get/set 深拷贝，可选每次操作让出一个宏任务以放大交错）===
 
@@ -43,7 +44,7 @@ function createMemoryStorage(initial = {}, { asyncTick = false } = {}) {
 function createStore(initial = {}, options = {}) {
   const storage = createMemoryStorage(initial, options);
   const resolveNickname = options.resolveNickname || (async () => ({ ok: false }));
-  return { store: new RoomStore({ storage, resolveNickname }), storage };
+  return { store: new RoomStore({ storage, resolveNickname, identity: RoomIdentity }), storage };
 }
 
 const room = (platform, roomId, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
@@ -401,6 +402,20 @@ test('patchRoomConfig：房间不存在返回 not-found，不写盘', async () =
 });
 
 // === 房间增删 ===
+
+test('addRoom：未知平台显式拒绝，不解析昵称也不写盘（不静默当成斗鱼）', async () => {
+  const resolveNickname = async () => ({ ok: true, nickname: '不该被调用' });
+  const { store, storage } = createStore({ rooms: [] }, { resolveNickname });
+  const rejected = await store.addRoom({ roomId: '100', platform: 'kuaishou' });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error, '不支持的平台');
+  assert.equal(storage.raw().rooms.length, 0, '房间列表不变');
+  assert.equal(storage.writes.length, 0, '既不写盘也不解析昵称');
+
+  const missing = await store.addRoom({ roomId: '100' });
+  assert.equal(missing.ok, false, '缺 platform 同样拒绝');
+  assert.equal(storage.writes.length, 0);
+});
 
 test('addRoom：非纯数字拒绝，重复拒绝，不写盘', async () => {
   const { store, storage } = createStore({ rooms: [room('douyu', '100')] });
