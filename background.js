@@ -5,6 +5,7 @@
 // 本文件只做三件事：把 chrome 适配成注入依赖、注册事件、把事件与消息交给编排。
 
 importScripts(
+  'lib/room-identity.js',
   'lib/storage.js',
   'lib/danmaku-watch.js',
   'lib/viewer-alert.js',

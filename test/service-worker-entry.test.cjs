@@ -15,6 +15,7 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 // 与 background.js 的 importScripts 顺序一致（入口只依赖这些全局）
 const LIB_FILES = [
+  'room-identity',
   'storage',
   'danmaku-watch',
   'viewer-alert',

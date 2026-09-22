@@ -84,6 +84,7 @@ npm test        # node --test，150 个用例
 
 ```
 background.js                 service worker 入口：组装依赖 + 接线 chrome 事件
+lib/room-identity.js          房间标识：复合键的拼与拆、房间号校验、每个平台的房间事实（零依赖词汇）
 lib/orchestrator.js           编排：轮询 / 采样 / 盯守 / 通知判定与发送
 lib/room-store.js             房间库：rooms / streamers / settings 的唯一写入者
 lib/storage.js                chrome.storage.local 的薄适配
