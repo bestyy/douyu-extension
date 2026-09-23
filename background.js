@@ -90,6 +90,13 @@ const notifier = {
 // 采样模式解析 oni / ONLINE_RANK_COUNT（观众数），盯守模式解析 chatmsg / DANMU_MSG（弹幕文本，
 // 同一条长连接同时供给弹幕检测与弹幕激增，见 ADR-0004）。
 // 客户端回调指向编排，故先建 clients 壳、构造编排，再回填实例。
+// 斗鱼客户端另需一个开播状态 port：采样超时兜底要问一次「该房是否开播」，这个平台事实的
+// 唯一实现在 douyu-api（见 CONTEXT.md「开播状态」），此处只做形状收敛（{success, data} → 三态布尔），
+// 与 resolveNickname 的收敛位置一致。两个实例共用同一个 port（盯守走长连接、不会走到超时兜底）。
+const probeDouyuOnline = async roomId => {
+  const result = await DouyuAPI.fetchRoomInfo(roomId);
+  return result && result.success ? result.data.online : undefined;
+};
 const clients = {};
 const orchestrator = createOrchestrator({
   store: roomStore,
@@ -120,6 +127,7 @@ const orchestrator = createOrchestrator({
 });
 
 clients.douyuSample = new BarrageClient({
+  probeOnline: probeDouyuOnline,
   onVipCount: data => orchestrator.onViewerCount('douyu', { roomId: data.roomId, value: data.vipCount })
 });
 clients.bilibiliSample = new BilibiliBarrageClient({
@@ -127,6 +135,7 @@ clients.bilibiliSample = new BilibiliBarrageClient({
   onFallback: () => orchestrator.handleBiliChannelFallback()
 });
 clients.douyuWatch = new BarrageClient({
+  probeOnline: probeDouyuOnline,
   onDanmu: data => orchestrator.handleDanmu('douyu', data)
 });
 clients.bilibiliWatch = new BilibiliBarrageClient({
