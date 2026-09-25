@@ -165,6 +165,46 @@ test('构造：缺 probeOnline port 直接抛（不静默失去兜底）', () =>
   assert.doesNotThrow(() => new BarrageClient({ probeOnline: async () => true }));
 });
 
+/**
+ * 安装「带接收者检查」的全局定时器替身。Chrome 的 WebIDL 在 setTimeout 被当成某个对象的
+ * 方法调用（this 既不是全局也不是 undefined）时抛 Illegal invocation，而 node 的 setTimeout
+ * 不检查接收者、照常工作——所以「把全局定时器存成对象属性、再 obj.setTimeout(...) 调用」
+ * 这个错在 node 里跑不出来，只有这个替身能复现。
+ * 不真的排定时器（这条测试只关心用哪个接收者调用），因此也不会让用例挂在 20 秒超时上。
+ */
+function installWebIdlTimers(t) {
+  const originals = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+  const seen = { set: 0, clear: 0 };
+  const guard = count => function () {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation');
+    }
+    count();
+    return 1;
+  };
+  globalThis.setTimeout = guard(() => { seen.set += 1; });
+  globalThis.clearTimeout = guard(() => { seen.clear += 1; });
+  t.after(() => Object.assign(globalThis, originals));
+  return seen;
+}
+
+test('采样：不注入 timers 时（生产路径）用全局定时器，且不以方法接收者调用', async t => {
+  const sockets = installFakeWebSocket(t);
+  const seen = installWebIdlTimers(t); // 须在构造前替换：构造函数读的是当时的全局值
+  // 生产（background.js）的两个斗鱼客户端都不注入 timers，走的就是这条默认分支
+  const client = new BarrageClient({ probeOnline: async () => true });
+
+  assert.doesNotThrow(() => client.sample(['100', '200']), '不得因接收者不是全局而抛 Illegal invocation');
+  assert.equal(sockets.length, 2, '两个房间各建了一条采样连接');
+  assert.equal(client.connections.size, 2);
+  assert.equal(seen.set, 2, '每条连接都用自己的全局定时器排了采样超时');
+
+  client.destroy();
+  // _disconnect 无条件清「采样超时」与「重试定时器」两个槽位，故每个房间两次
+  assert.equal(seen.clear, 4, '断开时用全局 clearTimeout 清掉超时槽位');
+  assert.equal(client.connections.size, 0);
+});
+
 test('采样超时：未开播 → 按贵宾数 0 上报并收尾，不重连', async t => {
   const h = makeSamplingClient(t, async () => false);
   h.client.sample(['100']);
