@@ -2,7 +2,8 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：上升边沿触发、持续高位不复报、回落重新武装、未配置不判、总开关与平台开关的联动、
-// 两轮离线清空后重新武装、单轮抖动不重复、无历史值视为 0、阈值钳制。
+// 两轮离线清空后重新武装、单轮抖动不重复、无历史值视为 0。
+// 裁决本身（含阈值解析与钳制）的纯单测在 test/viewer-alert.test.cjs。
 // 提醒的判定点在「值到达处」（编排的 onViewerCount，对应生产里弹幕客户端的回调），见 ADR-0002。
 'use strict';
 
@@ -10,7 +11,6 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createHarness, poll, douyuResult, bilibiliResult } = require('./support/harness.cjs');
-const { clampViewerThreshold, viewerAlertThreshold } = require('../lib/viewer-alert.js');
 
 const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
 const streamer = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, online: true, ...extra });
@@ -152,16 +152,4 @@ test('房间没有主播快照：静默忽略（不抛、不写）', async () =>
   const changed = await harness.orchestrator.onViewerCount('douyu', { roomId: '100', value: 5000 });
   assert.equal(changed, false);
   assert.equal(harness.notifications.length, 0);
-});
-
-test('阈值解析：字符串归一到整数、缺省 1000、范围钳制到 1–999999', async () => {
-  assert.equal(clampViewerThreshold('2500'), 2500);
-  assert.equal(clampViewerThreshold(undefined), 1000);
-  assert.equal(clampViewerThreshold('abc'), 1000);
-  assert.equal(clampViewerThreshold(0), 1);
-  assert.equal(clampViewerThreshold(-5), 1);
-  assert.equal(clampViewerThreshold(1e9), 999999);
-  assert.equal(clampViewerThreshold(12.7), 12);
-  assert.equal(viewerAlertThreshold({ threshold: '800' }), 800);
-  assert.equal(viewerAlertThreshold(null), 1000);
 });

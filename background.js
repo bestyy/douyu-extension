@@ -106,9 +106,7 @@ const orchestrator = createOrchestrator({
   bridge: biliBridge,
   notifier,
   rules: {
-    isViewerAlertEnabled,
-    isViewerAlertCrossed,
-    normalizeViewerAlert,
+    decideViewerAlert,
     isDanmakuWatchEnabled,
     matchKeyword,
     selectWatchPlan,
