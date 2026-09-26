@@ -196,6 +196,8 @@ function escapeHtml(str) {
  * 要不要显示整条判定交给 lib/today-stats.js 的 shouldShowTodayStats（总开关 → 跨零点保鲜）：
  * 总开关关闭、当天还没取到数、或旧值跨过了本地零点，这一行整行不出现（不显示 0，也不留空行）。
  * 只有斗鱼房间有这个形态的数据，B站卡片上不出现（平台门在取数端，落盘里根本没有它的条目）。
+ * 固定两行——首行弹幕、次行礼物，两块由「今日统计」标签的分割线与上面的此刻快照分开
+ * （四项并进一行在 360px 弹窗里放不下，见 popup.css 的 .streamer-today）。
  */
 function renderTodayStats(streamer, settings, todayStats) {
   const record = (todayStats || {})[RoomIdentity.roomKey(streamer)];
@@ -205,8 +207,9 @@ function renderTodayStats(streamer, settings, todayStats) {
   }
   return `
       <div class="streamer-today">
-        今日 弹幕 <span class="stat-num">${formatNumber(record.chatPv)}</span> / ${formatNumber(record.chatUv)} 人
-        · 礼物 <span class="stat-num">${formatNumber(record.giftAmount, 2)}</span> 元 / ${formatNumber(record.giftUv)} 人
+        <div class="today-label">今日统计</div>
+        <div class="today-part">弹幕 <span class="stat-num">${formatNumber(record.chatPv)}</span> / ${formatNumber(record.chatUv)} 人</div>
+        <div class="today-part">礼物 <span class="stat-num">${formatNumber(record.giftAmount, 2)}</span> 元 / ${formatNumber(record.giftUv)} 人</div>
       </div>
   `;
 }
