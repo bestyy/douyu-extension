@@ -286,6 +286,38 @@ header h1::before {
   padding: 8px;
 }
 
+/* ===== 分类分段 ===== */
+.category-section {
+  margin-bottom: 4px;
+}
+
+.category-section:last-child { margin-bottom: 0; }
+
+/* 分类标题：分类名 + 在播数；只要界面有房间就始终显示，不折叠 */
+.category-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 4px 6px;
+}
+
+.category-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label-2);
+  letter-spacing: 0.2px;
+}
+
+.category-count {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
 .streamer-card {
   display: flex;
   align-items: center;

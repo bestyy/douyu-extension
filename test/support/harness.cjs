@@ -9,6 +9,7 @@ const { RoomStore } = require('../../lib/room-store.js');
 const { BiliBridgeChannel } = require('../../lib/bili-bridge-channel.js');
 const { createOrchestrator } = require('../../lib/orchestrator.js');
 const { RoomIdentity } = require('../../lib/room-identity.js');
+const { RoomCategories } = require('../../lib/room-categories.js');
 const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
@@ -154,6 +155,7 @@ function createHarness(seed = {}, options = {}) {
   const store = new RoomStore({
     storage,
     identity: RoomIdentity,
+    categoryRules: RoomCategories,
     resolveNickname: async (platform, roomId) => {
       const result = await apis[platform].resolveNickname(roomId);
       return result && result.success ? { ok: true, nickname: result.nickname } : { ok: false };

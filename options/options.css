@@ -251,11 +251,13 @@ body {
 .input-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 input[type="text"],
 input[type="number"],
-#roomPlatform {
+#roomPlatform,
+#addRoomCategory {
   padding: 9px 12px;
   font-size: 14px;
   font-family: var(--sans);
@@ -271,7 +273,8 @@ input[type="text"]::placeholder { color: var(--label-3); }
 
 input[type="text"]:focus,
 input[type="number"]:focus,
-#roomPlatform:focus {
+#roomPlatform:focus,
+#addRoomCategory:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
@@ -281,8 +284,10 @@ input[type="number"]:focus,
   min-width: 120px;
 }
 
-/* 平台下拉选择 */
-#roomPlatform {
+/* 平台 / 分类下拉（同一套外观） */
+#roomPlatform,
+#addRoomCategory,
+.room-category {
   appearance: none;
   -webkit-appearance: none;
   padding-right: 30px;
@@ -290,6 +295,11 @@ input[type="number"]:focus,
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aeaeb2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
+}
+
+/* 添加房间的分类下拉：窄一些，长分类名不把整行撑开 */
+#addRoomCategory {
+  max-width: 150px;
 }
 
 /* ===== 按钮 ===== */
@@ -794,6 +804,124 @@ input[type="number"]:focus,
 .room-item.drag-over-bottom {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+
+/* ===== 分类分段（房间列表按分类分段；未分类固定最前、无手柄无改名删除） ===== */
+.category-section {
+  margin-top: 12px;
+}
+
+.category-section:first-child { margin-top: 2px; }
+
+.category-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  margin: 0 -8px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+.category-head:hover { background: var(--hover); }
+
+.category-name-static {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-3);
+}
+
+/* 分类名就地改名：平时像标签，聚焦才显形 */
+.category-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--sans);
+  color: var(--label-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.category-name-input:hover { border-color: var(--card-border); }
+
+.category-name-input:focus {
+  color: var(--label);
+  background: var(--fill);
+  border-color: var(--accent);
+}
+
+.category-count {
+  font-size: 12px;
+  color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.category-drag-handle,
+.category-remove {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--label-3);
+  font-size: 13px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.category-drag-handle {
+  font-size: 14px;
+  user-select: none;
+  cursor: grab;
+}
+
+.category-drag-handle:active { cursor: grabbing; }
+.category-drag-handle:hover { color: var(--label-2); background: var(--fill); }
+
+.category-remove { cursor: pointer; }
+.category-remove:hover { color: var(--red); background: var(--red-soft); }
+
+/* 分类之间的拖拽落点提示（房间拖拽的落点提示沿用 .room-item 上的样式） */
+.category-section.dragging { opacity: 0.5; }
+.category-section.drag-over-top > .category-head { box-shadow: inset 0 2px 0 var(--accent); }
+.category-section.drag-over-bottom > .category-head { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* 房间归类下拉：紧凑版，跟着房间行；归类只有下拉一个入口 */
+.room-category {
+  flex-shrink: 0;
+  max-width: 130px;
+  padding: 4px 24px 4px 8px;
+  font-size: 12px;
+  font-family: var(--sans);
+  color: var(--label-2);
+  background-color: var(--fill);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.room-category:hover { border-color: var(--card-border); }
+.room-category:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* 房间管理卡片底部：新建分类 / 刷新状态两个整宽按钮并排 */
+.list-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.list-actions .cell-btn { flex: 1; }
 
 /* 动效偏好 */
 @media (prefers-reduced-motion: reduce) {

@@ -10,7 +10,8 @@ const roomStore = new RoomStore({
     get: keys => chrome.storage.local.get(keys),
     set: entries => chrome.storage.local.set(entries)
   },
-  identity: RoomIdentity
+  identity: RoomIdentity,
+  categoryRules: RoomCategories
 });
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -91,10 +92,12 @@ async function loadData() {
       return;
     }
 
-    // 渲染列表
+    // 渲染列表：按分类分段（未分类固定最前），只渲染当下有在播房间的分类
     updateMeter(onlineStreamers.length);
     document.getElementById('onlineCount').textContent = String(onlineStreamers.length);
-    renderStreamerList(document.getElementById('streamerList'), onlineStreamers, {
+    renderGroupedStreamers(document.getElementById('streamerList'), onlineStreamers, {
+      rooms: rooms,
+      categories: data.categories,
       settings,
       todayStats: data.todayStats
     });
@@ -127,49 +130,85 @@ function renderWatchQueue(queued) {
   hint.classList.remove('hidden');
 }
 
-function renderStreamerList(container, streamers, { settings = {}, todayStats = {} } = {}) {
+/**
+ * 在线列表按分类分段渲染：分组顺序与「隐藏空分组」都交给 lib/room-categories.js 的分组投影
+ * （弹窗传 hideEmptyGroups=true，因此只留下当下有在播房间的分类）。标题是分类名 + 在播数，
+ * 「未分类」固定最前；只要这个界面有房间就始终显示标题（哪怕只有一个分组），且不支持折叠。
+ * 卡片之外的一切（今日统计、平台标签、排队提示、空状态）不变，只是被装进分组里。
+ */
+function renderGroupedStreamers(container, onlineStreamers, { rooms = [], categories = [], settings = {}, todayStats = {} } = {}) {
   container.innerHTML = '';
 
-  streamers.forEach(s => {
-    const card = document.createElement('div');
-    card.className = 'streamer-card';
-    card.addEventListener('click', async () => {
-      const url = RoomIdentity.liveUrl(s);
-      if (!url) return; // 未知平台没有直播间可进（房间库产出的条目不会是这种，防御性忽略）
-      const settings = (await roomStore.snapshot()).settings; // 快照已补全缺省值
-      if (settings.openInCurrentTab) {
-        chrome.tabs.update({ url });
-      } else {
-        chrome.tabs.create({ url });
-      }
-    });
+  // 主播快照不带分类归属，按房间复合键从房间快照补上 categoryId
+  const roomByKey = new Map(rooms.map(r => [RoomIdentity.roomKey(r), r]));
+  const grouped = onlineStreamers.map(s => {
+    const room = roomByKey.get(RoomIdentity.roomKey(s));
+    return room ? { ...s, categoryId: room.categoryId } : s;
+  });
+  const groups = RoomCategories.buildRoomGroups({ rooms: grouped, categories, hideEmptyGroups: true });
 
-    const coverImg = document.createElement('img');
-    coverImg.className = 'streamer-cover';
-    coverImg.alt = s.nickname;
-    coverImg.referrerPolicy = 'no-referrer';
-    const fallbackSrc = chrome.runtime.getURL('icons/icon48.png');
-    coverImg.addEventListener('error', () => {
-      if (coverImg.src !== fallbackSrc) {
-        coverImg.src = fallbackSrc;
-      }
-    });
-    coverImg.src = s.coverUrl || fallbackSrc;
+  groups.forEach(group => {
+    const section = document.createElement('div');
+    section.className = 'category-section';
 
-    const infoDiv = document.createElement('div');
-    infoDiv.className = 'streamer-info';
-    // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出
-    const platformTag = RoomIdentity.isPlatform(s.platform)
-      ? `<span class="platform-tag ${s.platform}">${RoomIdentity.platformLabel(s.platform)}</span>`
-      : '<span class="platform-tag">未知平台</span>';
-    // 平台统计：观众数值字段与指标名都取自房间标识 module（斗鱼贵宾数 / B站高能榜在线数），> 0 时显示
-    const metric = RoomIdentity.viewerMetric(s.platform);
-    const field = RoomIdentity.viewerField(s.platform);
-    const statValue = field ? s[field] : undefined;
-    const statText = metric && typeof statValue === 'number' && statValue > 0
-      ? ` · <span class="stat-num">${formatNumber(statValue)}</span> ${metric.shortLabel}`
-      : '';
-    infoDiv.innerHTML = `
+    const head = document.createElement('div');
+    head.className = 'category-head';
+    const name = document.createElement('span');
+    name.className = 'category-name';
+    name.textContent = group.name;
+    const count = document.createElement('span');
+    count.className = 'category-count';
+    count.textContent = String(group.onlineCount);
+    head.appendChild(name);
+    head.appendChild(count);
+    section.appendChild(head);
+
+    group.rooms.forEach(s => section.appendChild(renderStreamerCard(s, { settings, todayStats })));
+    container.appendChild(section);
+  });
+}
+
+/** 单张主播卡片（分组之外的一切既有内容不变） */
+function renderStreamerCard(s, { settings = {}, todayStats = {} } = {}) {
+  const card = document.createElement('div');
+  card.className = 'streamer-card';
+  card.addEventListener('click', async () => {
+    const url = RoomIdentity.liveUrl(s);
+    if (!url) return; // 未知平台没有直播间可进（房间库产出的条目不会是这种，防御性忽略）
+    const settings = (await roomStore.snapshot()).settings; // 快照已补全缺省值
+    if (settings.openInCurrentTab) {
+      chrome.tabs.update({ url });
+    } else {
+      chrome.tabs.create({ url });
+    }
+  });
+
+  const coverImg = document.createElement('img');
+  coverImg.className = 'streamer-cover';
+  coverImg.alt = s.nickname;
+  coverImg.referrerPolicy = 'no-referrer';
+  const fallbackSrc = chrome.runtime.getURL('icons/icon48.png');
+  coverImg.addEventListener('error', () => {
+    if (coverImg.src !== fallbackSrc) {
+      coverImg.src = fallbackSrc;
+    }
+  });
+  coverImg.src = s.coverUrl || fallbackSrc;
+
+  const infoDiv = document.createElement('div');
+  infoDiv.className = 'streamer-info';
+  // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出
+  const platformTag = RoomIdentity.isPlatform(s.platform)
+    ? `<span class="platform-tag ${s.platform}">${RoomIdentity.platformLabel(s.platform)}</span>`
+    : '<span class="platform-tag">未知平台</span>';
+  // 平台统计：观众数值字段与指标名都取自房间标识 module（斗鱼贵宾数 / B站高能榜在线数），> 0 时显示
+  const metric = RoomIdentity.viewerMetric(s.platform);
+  const field = RoomIdentity.viewerField(s.platform);
+  const statValue = field ? s[field] : undefined;
+  const statText = metric && typeof statValue === 'number' && statValue > 0
+    ? ` · <span class="stat-num">${formatNumber(statValue)}</span> ${metric.shortLabel}`
+    : '';
+  infoDiv.innerHTML = `
       <div class="streamer-name">${platformTag}${escapeHtml(s.nickname)}</div>
       <div class="streamer-title">${escapeHtml(s.title || '正在直播')}</div>
       <div class="streamer-meta">
@@ -179,10 +218,9 @@ function renderStreamerList(container, streamers, { settings = {}, todayStats = 
       ${renderTodayStats(s, settings, todayStats)}
     `;
 
-    card.appendChild(coverImg);
-    card.appendChild(infoDiv);
-    container.appendChild(card);
-  });
+  card.appendChild(coverImg);
+  card.appendChild(infoDiv);
+  return card;
 }
 
 function escapeHtml(str) {

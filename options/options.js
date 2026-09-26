@@ -1,17 +1,25 @@
 // options/options.js — 设置页逻辑（房间号管理版）
 //
 // 单写者（见 docs/adr/0003-room-store-single-writer.md）：页面只读房间库的只读快照，
-// 变更一律发消息给 SW（PATCH_SETTINGS / PATCH_ROOM_CONFIG / REORDER_ROOMS），页面不写 storage。
+// 变更一律发消息给 SW（PATCH_SETTINGS / PATCH_ROOM_CONFIG / REORDER_ROOMS / ADD_ROOM / REMOVE_ROOM /
+// ADD_CATEGORY / RENAME_CATEGORY / REMOVE_CATEGORY / REORDER_CATEGORIES / SET_ROOM_CATEGORY），
+// 页面不写 storage。
 // 房间标识（复合键、平台标签、观众数指标文案与开关键）来自 lib/room-identity.js 的全局
 // `RoomIdentity`，页面不自己拼字符串，也不自查存储形状（见 CONTEXT.md「房间标识」）。
+// 分类的分组顺序、未分类固定最前与空分组取舍来自 lib/room-categories.js 的全局 `RoomCategories`，
+// 页面只渲染它的结论（归类 / 改名 / 删除 / 分类顺序都经 SW 落到房间库，见 ADR-0008）。
 
 const roomStore = new RoomStore({
   storage: {
     get: keys => chrome.storage.local.get(keys),
     set: entries => chrome.storage.local.set(entries)
   },
-  identity: RoomIdentity
+  identity: RoomIdentity,
+  categoryRules: RoomCategories
 });
+
+/** 分类下拉里「新建分类…」的哨兵值（是下拉选项值，不是分类 id） */
+const NEW_CATEGORY_OPTION = '__new__';
 
 /** 设置变更：落盘、重建轮询 alarm、重算通道与盯守都在 SW 侧完成 */
 async function patchSettings(patch) {
@@ -27,6 +35,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const roomIdInput = document.getElementById('roomIdInput');
   const addRoomBtn = document.getElementById('addRoomBtn');
+  const addRoomCategory = document.getElementById('addRoomCategory');
+  const newCategoryBtn = document.getElementById('newCategoryBtn');
   const roomList = document.getElementById('roomList');
   const emptyRooms = document.getElementById('emptyRooms');
   const refreshStatusBtn = document.getElementById('refreshStatusBtn');
@@ -66,9 +76,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStatus(addStatus, '已检测到旧版配置，请添加您要监控的房间号', 'info');
   }
 
-  // 渲染房间列表
+  // 渲染房间列表：按分类分段（未分类固定最前；空分类也渲染，便于先建好分类再往里放房间）
   async function renderRoomList() {
-    const [{ rooms = [], streamers = [], settings }, extra] = await Promise.all([
+    const [{ rooms = [], streamers = [], categories = [], settings }, extra] = await Promise.all([
       roomStore.snapshot(),
       chrome.storage.local.get('watchQueued') // 盯守排队视图（SW 侧的键，不归房间库）
     ]);
@@ -82,50 +92,137 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('headMeter').dataset.lit =
       onlineCount >= 10 ? '4' : onlineCount >= 6 ? '3' : onlineCount >= 3 ? '2' : onlineCount >= 1 ? '1' : '0';
 
-    if (rooms.length === 0) {
+    renderAddCategoryOptions(categories);
+
+    // 分组投影（未分类固定最前、其余按分类顺序、保留空分组）交给 lib/room-categories.js；
+    // 房间带上开播态供「在播数/总数」计数
+    const grouped = RoomCategories.buildRoomGroups({
+      rooms: rooms.map(r => ({ ...r, online: onlineMap[RoomIdentity.roomKey(r)] })),
+      categories,
+      hideEmptyGroups: false
+    });
+    // 一个房间都没有时只展示已建好的分类（先建分类再往里放房间）；分类也没有就只剩空提示
+    const visible = rooms.length === 0 ? grouped.filter(group => group.id !== '') : grouped;
+    emptyRooms.classList.toggle('hidden', rooms.length > 0);
+    if (visible.length === 0) {
       roomList.innerHTML = '';
-      emptyRooms.classList.remove('hidden');
       return;
     }
-    emptyRooms.classList.add('hidden');
 
-    roomList.innerHTML = rooms.map(r => {
-      const onlineStatus = onlineMap[RoomIdentity.roomKey(r)];
-      let statusCls;
-      if (onlineStatus === true) {
-        statusCls = 'online';
-      } else if (onlineStatus === false) {
-        statusCls = 'offline';
-      } else {
-        statusCls = 'unknown';
-      }
-      // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出，
-      // 不回退成斗鱼，也不把原始取值拼进标记里（页面其余动态文本同样经 escapeHtml）
-      const platformTag = RoomIdentity.isPlatform(r.platform)
-        ? `<span class="platform-tag ${r.platform}">${RoomIdentity.platformLabel(r.platform)}</span>`
-        : '<span class="platform-tag">未知平台</span>';
-      return `
-        <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
-          <span class="drag-handle" draggable="false">⠿</span>
-          <span class="status-dot ${statusCls}"></span>
-          ${platformTag}
-          <span class="room-id">${r.roomId}</span>
-          <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
-          <button class="btn-notify${roomNotifyActive(r) ? ' on' : ''}" title="该房间的通知设置">通知设置</button>
-          <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
-          ${renderNotifyPanel(r, {
-            watchEnabled: danmakuWatchEnabled.checked,
-            alertEnabled: viewerAlertEnabled.checked,
-            surgeEnabled: surgeAlertEnabled.checked,
-            highlightEnabled: highlightAlertEnabled.checked,
-            viewerFetchEnabled: settings[RoomIdentity.viewerToggle(r.platform)] !== false,
-            surgeQueued: queuedKeys.has(RoomIdentity.roomKey(r))
-          })}
-        </div>
-      `;
-    }).join('');
+    const panelState = {
+      settings,
+      watchEnabled: danmakuWatchEnabled.checked,
+      alertEnabled: viewerAlertEnabled.checked,
+      surgeEnabled: surgeAlertEnabled.checked,
+      highlightEnabled: highlightAlertEnabled.checked,
+      queuedKeys
+    };
+    roomList.innerHTML = visible
+      .map(group => renderCategorySection(group, { categories, panelState }))
+      .join('');
 
-    // 删除按钮事件
+    wireRoomItems();
+    initDragAndDrop();
+  }
+
+  /** 一个分类段：标题行（分类名 + 在播数/总数 + 就地改名 / 删除）+ 该分类下的房间行 */
+  function renderCategorySection(group, { categories, panelState }) {
+    const head = group.id === ''
+      ? `<div class="category-head" data-category-id="">
+          <span class="category-name-static">${RoomCategories.UNCATEGORIZED_NAME}</span>
+          <span class="category-count">${group.onlineCount}/${group.totalCount}</span>
+        </div>`
+      : `<div class="category-head" data-category-id="${escapeAttr(group.id)}">
+          <span class="category-drag-handle" draggable="false" title="拖动调整分类顺序">⠿</span>
+          <input class="category-name-input" data-category-id="${escapeAttr(group.id)}" value="${escapeAttr(group.name)}" maxlength="${RoomCategories.NAME_MAX_LENGTH}" title="就地改名" spellcheck="false">
+          <span class="category-count">${group.onlineCount}/${group.totalCount}</span>
+          <button class="category-remove" data-category-id="${escapeAttr(group.id)}" data-category-name="${escapeAttr(group.name)}" data-category-count="${group.totalCount}" title="删除分类">✕</button>
+        </div>`;
+    const items = group.rooms
+      .map(r => renderRoomItem(r, group.id, { categories, panelState }))
+      .join('');
+    // 拖拽作用域就是这一段（房间拖拽只在段内生效，拖到别的段上回弹）
+    return `
+      <div class="category-section" data-category-id="${escapeAttr(group.id)}" draggable="false">
+        ${head}
+        <div class="category-rooms">${items}</div>
+      </div>
+    `;
+  }
+
+  /** 一行房间：既有内容不变，只在昵称与通知按钮之间多一个归类下拉（归类只有下拉一个入口） */
+  function renderRoomItem(r, groupId, { categories, panelState }) {
+    const onlineStatus = r.online;
+    let statusCls;
+    if (onlineStatus === true) {
+      statusCls = 'online';
+    } else if (onlineStatus === false) {
+      statusCls = 'offline';
+    } else {
+      statusCls = 'unknown';
+    }
+    // 平台标签：取值与文案都来自房间标识 module；不认识的取值（只可能来自手改存储）显式标出，
+    // 不回退成斗鱼，也不把原始取值拼进标记里（页面其余动态文本同样经 escapeHtml）
+    const platformTag = RoomIdentity.isPlatform(r.platform)
+      ? `<span class="platform-tag ${r.platform}">${RoomIdentity.platformLabel(r.platform)}</span>`
+      : '<span class="platform-tag">未知平台</span>';
+    return `
+      <div class="room-item" data-room-id="${r.roomId}" data-platform="${r.platform}">
+        <span class="drag-handle" draggable="false">⠿</span>
+        <span class="status-dot ${statusCls}"></span>
+        ${platformTag}
+        <span class="room-id">${r.roomId}</span>
+        <span class="room-nickname">${escapeHtml(r.nickname || '未知')}</span>
+        <select class="room-category" title="归入哪个分类">${renderCategoryOptions(categories, groupId)}</select>
+        <button class="btn-notify${roomNotifyActive(r) ? ' on' : ''}" title="该房间的通知设置">通知设置</button>
+        <button class="btn-remove" data-room-id="${r.roomId}">✕</button>
+        ${renderNotifyPanel(r, {
+          watchEnabled: panelState.watchEnabled,
+          alertEnabled: panelState.alertEnabled,
+          surgeEnabled: panelState.surgeEnabled,
+          highlightEnabled: panelState.highlightEnabled,
+          viewerFetchEnabled: panelState.settings[RoomIdentity.viewerToggle(r.platform)] !== false,
+          surgeQueued: panelState.queuedKeys.has(RoomIdentity.roomKey(r))
+        })}
+      </div>
+    `;
+  }
+
+  /** 分类下拉的选项：未分类 + 所有分类 + 「新建分类…」；selectedId 为空串即未分类 */
+  function renderCategoryOptions(categories, selectedId) {
+    const options = [`<option value=""${selectedId === '' ? ' selected' : ''}>${RoomCategories.UNCATEGORIZED_NAME}</option>`];
+    for (const category of categories) {
+      const id = String(category.id);
+      options.push(`<option value="${escapeAttr(id)}"${id === selectedId ? ' selected' : ''}>${escapeHtml(category.name)}</option>`);
+    }
+    options.push(`<option value="${NEW_CATEGORY_OPTION}">＋ 新建分类…</option>`);
+    return options.join('');
+  }
+
+  /** 添加房间表单的分类下拉（默认未分类，尽量保留用户当前的选择） */
+  function renderAddCategoryOptions(categories) {
+    const prev = addRoomCategory.value;
+    addRoomCategory.innerHTML = renderCategoryOptions(categories, '');
+    addRoomCategory.value = categories.some(c => String(c.id) === prev) ? prev : '';
+  }
+
+  /** 弹窗输入分类名并建分类；取消或失败返回 null（失败时把原因显示在添加状态处） */
+  async function createCategoryViaPrompt() {
+    const name = window.prompt('新建分类名：');
+    if (name === null) {
+      return null; // 用户取消
+    }
+    const response = await chrome.runtime.sendMessage({ type: 'ADD_CATEGORY', name });
+    if (!response || !response.ok) {
+      showStatus(addStatus, (response && response.error) || '创建分类失败', 'error');
+      return null;
+    }
+    return response.category;
+  }
+
+  /** 渲染完成后接线：删除房间 / 通知面板 / 归类下拉 / 分类就地改名与删除 */
+  function wireRoomItems() {
+    // 删除房间
     document.querySelectorAll('.btn-remove').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -153,11 +250,65 @@ document.addEventListener('DOMContentLoaded', async () => {
       panel.addEventListener('change', () => saveNotifyPanel(panel));
     });
 
-    // 初始化拖拽排序
-    initDragAndDrop();
+    // 归类：下拉是唯一入口（拖拽只排序、不改分类）；「新建分类…」先建再把该房放进去
+    document.querySelectorAll('.room-category').forEach(select => {
+      select.addEventListener('change', async () => {
+        const roomItem = select.closest('.room-item');
+        if (select.value === NEW_CATEGORY_OPTION) {
+          const created = await createCategoryViaPrompt();
+          if (!created) {
+            await renderRoomList();
+            return;
+          }
+          select.value = String(created.id);
+        }
+        const response = await chrome.runtime.sendMessage({
+          type: 'SET_ROOM_CATEGORY',
+          roomId: roomItem.dataset.roomId,
+          platform: roomItem.dataset.platform,
+          categoryId: select.value
+        });
+        if (!response || !response.ok) {
+          showStatus(addStatus, (response && response.error) || '归类失败', 'error');
+        }
+        await renderRoomList();
+      });
+    });
+
+    // 分类就地改名（回车即失焦提交，change 只触发一次）
+    document.querySelectorAll('.category-name-input').forEach(input => {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') input.blur();
+      });
+      input.addEventListener('change', async () => {
+        const response = await chrome.runtime.sendMessage({ type: 'RENAME_CATEGORY', id: input.dataset.categoryId, name: input.value });
+        if (!response || !response.ok) {
+          showStatus(addStatus, (response && response.error) || '改名失败', 'error');
+        }
+        await renderRoomList();
+      });
+    });
+
+    // 删除分类：二次确认并报出会影响的房间数；房间本体不删，回落未分类
+    document.querySelectorAll('.category-remove').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const count = Number(btn.dataset.categoryCount) || 0;
+        const confirmed = window.confirm(`「${btn.dataset.categoryName}」下有 ${count} 个房间，删除后它们将回到未分类。确定删除？`);
+        if (!confirmed) {
+          return;
+        }
+        const response = await chrome.runtime.sendMessage({ type: 'REMOVE_CATEGORY', id: btn.dataset.categoryId });
+        if (!response || !response.ok) {
+          showStatus(addStatus, (response && response.error) || '删除失败', 'error');
+        }
+        await renderRoomList();
+      });
+    });
   }
 
-  // 添加房间：房间号与平台都由房间库校验（纯数字校验只有那一个口径），页面只负责空输入提示
+  // 添加房间：房间号与平台都由房间库校验（纯数字校验只有那一个口径），页面只负责空输入提示。
+  // 分类下拉默认「未分类」，也可以就地「新建分类…」，新房间一次到位（落后在所属分类末尾）
   async function handleAddRoom() {
     const roomId = roomIdInput.value.trim();
     const platform = document.getElementById('roomPlatform').value;
@@ -166,10 +317,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    let categoryId = addRoomCategory.value;
+    if (categoryId === NEW_CATEGORY_OPTION) {
+      const created = await createCategoryViaPrompt();
+      if (!created) {
+        await renderRoomList();
+        return;
+      }
+      categoryId = String(created.id);
+    }
+
     showStatus(addStatus, '正在解析房间号…', 'info');
     addRoomBtn.disabled = true;
 
-    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId, platform }, (response) => {
+    chrome.runtime.sendMessage({ type: 'ADD_ROOM', roomId, platform, categoryId }, (response) => {
       addRoomBtn.disabled = false;
       if (response?.ok) {
         roomIdInput.value = '';
@@ -184,6 +345,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   addRoomBtn.addEventListener('click', handleAddRoom);
   roomIdInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleAddRoom();
+  });
+
+  // 先建好分类再往里放房间（分类为空也照样显示在列表里）
+  newCategoryBtn.addEventListener('click', async () => {
+    const created = await createCategoryViaPrompt();
+    if (!created) {
+      return;
+    }
+    showStatus(addStatus, `已新建分类：${created.name}`, 'success');
+    await renderRoomList();
   });
 
   // 刷新全部状态
@@ -332,60 +503,66 @@ document.addEventListener('DOMContentLoaded', async () => {
   await renderRoomList();
 
   // === 拖拽排序 ===
+  // 两种拖拽共用一个手势状态：房间只在所属分类段内排序（拖到别的段上回弹），分类标题手柄调整
+  // 分类之间的先后（「未分类」没有手柄、拖不动）。归类不走拖拽——只有下拉一个入口（见 ADR-0008）。
   function initDragAndDrop() {
-    const roomList = document.getElementById('roomList');
-    let dragSrc = null;
+    let dragKind = null;    // 'room' | 'category' | null
+    let dragRoom = null;    // 正在拖的房间行
+    let dragSection = null; // 正在拖的分类段
 
-    // 只有从手柄开始 mouse down 才启用 draggable
-    // 每次重新设置前先清除所有历史状态
-    // document mouseup 重置所有 draggable，防止未实际拖拽时状态残留
+    // 只有从手柄开始 mouse down 才启用 draggable；mouseup 重置，防止未实际拖拽时状态残留
     const resetDraggable = () => {
-      roomList.querySelectorAll('.room-item').forEach(el => {
+      roomList.querySelectorAll('.room-item, .category-section').forEach(el => {
         el.setAttribute('draggable', 'false');
       });
     };
     document.addEventListener('mouseup', resetDraggable);
 
+    const clearMarks = () => {
+      roomList.querySelectorAll('.room-item, .category-section').forEach(el => {
+        el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+      });
+    };
+
     roomList.querySelectorAll('.drag-handle').forEach(handle => {
       handle.addEventListener('mousedown', (e) => {
         e.stopPropagation(); // 防止冒泡到 room-item
-        // 重置所有项，防止残留 draggable 状态
-        roomList.querySelectorAll('.room-item').forEach(el => {
-          el.setAttribute('draggable', 'false');
-        });
-        const item = handle.closest('.room-item');
-        item.setAttribute('draggable', 'true');
+        resetDraggable();
+        dragKind = 'room';
+        handle.closest('.room-item').setAttribute('draggable', 'true');
       });
     });
 
+    roomList.querySelectorAll('.category-drag-handle').forEach(handle => {
+      handle.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        resetDraggable();
+        dragKind = 'category';
+        handle.closest('.category-section').setAttribute('draggable', 'true');
+      });
+    });
+
+    // 房间拖拽：作用域限定在同一个 .category-rooms 里
     roomList.querySelectorAll('.room-item').forEach(item => {
       item.addEventListener('dragstart', (e) => {
-        // 只有 draggable=true 时才会触发 dragstart，
-        // 而 draggable=true 仅通过手柄 mousedown 设置，
-        // 所以此处不需要额外验证
-        dragSrc = item;
+        if (dragKind !== 'room') return;
+        dragRoom = item;
         item.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', item.dataset.roomId);
       });
 
       item.addEventListener('dragover', (e) => {
+        if (dragKind !== 'room' || !dragRoom) return;
+        // 拖到别的分类段上不给落点提示（松手即回弹，不改分类）
+        const section = item.closest('.category-section');
+        if (section !== dragRoom.closest('.category-section')) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-
-        if (item === dragSrc) return;
-
-        // 判断插入位置：鼠标位于当前项上半部分还是下半部分
+        if (item === dragRoom) return;
+        section.querySelectorAll('.room-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
         const rect = item.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        const isAfter = e.clientY > midY;
-
-        // 清除所有项的 drag-over 类
-        roomList.querySelectorAll('.room-item').forEach(el => {
-          el.classList.remove('drag-over-top', 'drag-over-bottom');
-        });
-
-        item.classList.add(isAfter ? 'drag-over-bottom' : 'drag-over-top');
+        item.classList.add(e.clientY > rect.top + rect.height / 2 ? 'drag-over-bottom' : 'drag-over-top');
       });
 
       item.addEventListener('dragleave', () => {
@@ -393,67 +570,112 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       item.addEventListener('dragend', () => {
-        roomList.querySelectorAll('.room-item').forEach(el => {
-          el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
-          el.setAttribute('draggable', 'false');
-        });
-        dragSrc = null;
+        clearMarks();
+        resetDraggable();
+        dragKind = null;
+        dragRoom = null;
       });
 
       item.addEventListener('drop', async (e) => {
+        if (dragKind !== 'room' || !dragRoom || item === dragRoom) return;
+        const section = item.closest('.category-section');
+        if (section !== dragRoom.closest('.category-section')) return; // 跨段回弹
         e.preventDefault();
-        if (item === dragSrc) return;
 
-        // 计算新顺序
-        const items = Array.from(roomList.querySelectorAll('.room-item'));
-        const dragIndex = items.indexOf(dragSrc);
+        const items = Array.from(section.querySelectorAll('.room-item'));
+        const dragIndex = items.indexOf(dragRoom);
         const dropIndex = items.indexOf(item);
-
         const rect = item.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        const insertAfter = e.clientY > midY;
+        const insertAfter = e.clientY > rect.top + rect.height / 2;
 
-        // 构建新的排序
-        let newOrder;
-        if (dragIndex < dropIndex) {
-          // 向下拖：移除 dragSrc，插入到 dropIndex（或之后）
-          newOrder = items.filter(el => el !== dragSrc);
-          // 移除 dragSrc 后，目标项索引变为 dropIndex - 1
-          const insertAt = insertAfter ? dropIndex : dropIndex - 1;
-          newOrder.splice(insertAt, 0, dragSrc);
-        } else {
-          // 向上拖
-          newOrder = items.filter(el => el !== dragSrc);
-          const insertAt = insertAfter ? dropIndex + 1 : dropIndex;
-          newOrder.splice(insertAt, 0, dragSrc);
-        }
-
-        // 目标顺序（只发房间身份，不发数据；未列出的房间由房间库按原相对顺序接尾，不会丢）
-        const order = newOrder.map(el => ({
-          roomId: el.dataset.roomId,
-          platform: el.dataset.platform
-        }));
+        // 构建段内新顺序：拖拽项插到目标项的上/下半边
+        const newOrder = items.filter(el => el !== dragRoom);
+        const insertAt = dragIndex < dropIndex
+          ? (insertAfter ? dropIndex : dropIndex - 1)
+          : (insertAfter ? dropIndex + 1 : dropIndex);
+        newOrder.splice(insertAt, 0, dragRoom);
+        const order = newOrder.map(el => ({ roomId: el.dataset.roomId, platform: el.dataset.platform }));
 
         try {
-          const response = await chrome.runtime.sendMessage({ type: 'REORDER_ROOMS', order });
+          // 重排请求带上所在分类：房间库只置换该分类成员所占的槽位，不动别的分类
+          const response = await chrome.runtime.sendMessage({ type: 'REORDER_ROOMS', categoryId: section.dataset.categoryId, order });
           if (!response || !response.ok) {
             throw new Error((response && response.error) || '重排失败');
           }
         } catch (err) {
           console.error('拖拽排序保存失败:', err);
-          // 回滚到原始顺序
           await renderRoomList();
           return;
         }
 
-        // 清除样式并重新渲染
-        roomList.querySelectorAll('.room-item').forEach(el => {
-          el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
-          el.setAttribute('draggable', 'false');
-        });
-        dragSrc = null;
+        clearMarks();
+        resetDraggable();
+        dragKind = null;
+        dragRoom = null;
+        await renderRoomList();
+      });
+    });
 
-        // 重新渲染列表（保持新视觉顺序）
+    // 分类拖拽：只有真分类段有手柄，未分类段既不参与排序、也不能被排到后面；
+    // 未分类段仍接受落点——拖到它上面等于把这个分类排到所有分类之前（未分类永远最前）
+    roomList.querySelectorAll('.category-section').forEach(section => {
+      section.addEventListener('dragstart', (e) => {
+        if (dragKind !== 'category') return;
+        dragSection = section;
+        section.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', section.dataset.categoryId);
+      });
+
+      section.addEventListener('dragover', (e) => {
+        if (dragKind !== 'category' || !dragSection || section === dragSection) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        roomList.querySelectorAll('.category-section').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+        const rect = section.querySelector('.category-head').getBoundingClientRect();
+        section.classList.add(e.clientY > rect.top + rect.height / 2 ? 'drag-over-bottom' : 'drag-over-top');
+      });
+
+      section.addEventListener('dragleave', () => {
+        section.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+
+      section.addEventListener('dragend', () => {
+        clearMarks();
+        resetDraggable();
+        dragKind = null;
+        dragSection = null;
+      });
+
+      section.addEventListener('drop', async (e) => {
+        if (dragKind !== 'category' || !dragSection || section === dragSection) return;
+        e.preventDefault();
+
+        const headRect = section.querySelector('.category-head').getBoundingClientRect();
+        const insertAfter = e.clientY > headRect.top + headRect.height / 2;
+        // 分类顺序只由真分类组成；拖到未分类段上等于排到所有分类之前（未分类永远最前）
+        const ids = Array.from(roomList.querySelectorAll('.category-section'))
+          .map(el => el.dataset.categoryId)
+          .filter(id => id !== '' && id !== dragSection.dataset.categoryId);
+        const insertAt = section.dataset.categoryId === ''
+          ? 0
+          : (insertAfter ? ids.indexOf(section.dataset.categoryId) + 1 : ids.indexOf(section.dataset.categoryId));
+        const order = ids.slice();
+        order.splice(insertAt, 0, dragSection.dataset.categoryId);
+
+        try {
+          const response = await chrome.runtime.sendMessage({ type: 'REORDER_CATEGORIES', order });
+          if (!response || !response.ok) {
+            throw new Error((response && response.error) || '分类重排失败');
+          }
+        } catch (err) {
+          console.error('分类排序保存失败:', err);
+        }
+
+        clearMarks();
+        resetDraggable();
+        dragKind = null;
+        dragSection = null;
         await renderRoomList();
       });
     });
@@ -470,6 +692,15 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+/** 属性值转义：回归 textContent 不转义引号，而分类名可能进 value/data-* 属性 */
+function escapeAttr(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // === 房间通知设置面板（房间行内展开：开播通知 + 弹幕检测 + 观众数提醒 + 弹幕激增 + 看点通知）===

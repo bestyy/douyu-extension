@@ -31,15 +31,19 @@
           <option value="bilibili">B站</option>
         </select>
         <input type="text" id="roomIdInput" placeholder="输入房间号，如 12345" autocomplete="off">
+        <select id="addRoomCategory" title="新房间归入哪个分类"></select>
         <button id="addRoomBtn" class="btn primary">添加</button>
       </div>
       <div id="addStatus" class="status hidden"></div>
       <div id="roomList" class="room-list"></div>
       <div id="emptyRooms" class="empty-hint">尚未添加房间，请输入房间号并点击添加</div>
       <div class="cell-divider"></div>
-      <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
+      <div class="list-actions">
+        <button id="newCategoryBtn" class="cell-btn">＋ 新建分类</button>
+        <button id="refreshStatusBtn" class="cell-btn">刷新全部状态</button>
+      </div>
     </section>
-    <p class="group-hint">添加要监控的房间号；拖动行首手柄可调整顺序。每个房间的开关与参数（开播通知、检测词、提醒阈值、激增开关、看点开关）在行内「通知设置」里单独配置，弹幕检测与观众数提醒、弹幕激增斗鱼 / B站 均支持，看点通知仅斗鱼支持</p>
+    <p class="group-hint">添加要监控的房间号，并可先选好它归入哪个分类（默认「未分类」，也可以直接在列表里「新建分类…」）。列表按分类分段显示，拖动分类标题上的手柄可调整分类之间的先后，拖动房间行首的手柄只在它所在的分类段内调整顺序；每个房间的开关与参数（开播通知、检测词、提醒阈值、激增开关、看点开关）在行内「通知设置」里单独配置，弹幕检测与观众数提醒、弹幕激增斗鱼 / B站 均支持，看点通知仅斗鱼支持</p>
 
     <h2 class="group-title">通知总开关</h2>
     <section class="card">
@@ -175,6 +179,7 @@
   <script src="../lib/danmaku-surge.js"></script>
   <script src="../lib/highlight-alert.js"></script>
   <script src="../lib/today-stats.js"></script>
+  <script src="../lib/room-categories.js"></script>
   <script src="../lib/room-store.js"></script>
   <script src="options.js"></script>
 </body>

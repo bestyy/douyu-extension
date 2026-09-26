@@ -1,6 +1,6 @@
 // background.js — Service Worker 入口：装配（composition root）+ chrome 事件接线
 //
-// 编排在 lib/orchestrator.js（轮询 / 采样 / 盯守 / 通知），三个键的形状与全部变更在
+// 编排在 lib/orchestrator.js（轮询 / 采样 / 盯守 / 通知），四个键的形状与全部变更在
 // lib/room-store.js（单写者，见 docs/adr/0003-room-store-single-writer.md）。
 // 本文件只做三件事：把 chrome 适配成注入依赖、注册事件、把事件与消息交给编排。
 
@@ -12,6 +12,7 @@ importScripts(
   'lib/danmaku-surge.js',
   'lib/highlight-alert.js',
   'lib/today-stats.js',
+  'lib/room-categories.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
   'lib/doseeing-api.js',
@@ -42,11 +43,13 @@ const todayStatsApi = {
   fetchTodayStats: id => DoseeingAPI.fetchTodayStats(id)
 };
 
-// === 房间库（rooms / streamers / settings 的形状与全部变更）===
+// === 房间库（rooms / streamers / settings / categories 的形状与全部变更）===
 const roomStore = new RoomStore({
   storage: chromeStoragePort,
   // 房间标识 module：复合键 / 房间号校验 / 平台事实（零依赖，故它排在所有使用它的 lib 之前）
   identity: RoomIdentity,
+  // 分类规则 module：名称校验 / 「未分类」保留名 / 分组回落（房间库只判名与定组，落盘与 id 由它自己生成）
+  categoryRules: RoomCategories,
   // 昵称解析 port：把平台 API 的 { success, nickname } 收敛成 { ok, nickname }
   resolveNickname: async (platform, roomId) => {
     const result = await apis[platform].resolveNickname(roomId);

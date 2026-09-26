@@ -2,8 +2,9 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：只读快照与默认值、观众数采样计划、轮询合并（取新/留旧/透传/两轮离线清空/开播边沿）、
-// 值到达（门控、未变不写、前后值）、平台门控对齐与清字段、设置与单房配置变更、房间增删与重排、
-// 初始化迁移，以及串行队列对「读改写交错」的消除（丢更新是本 module 存在的理由）。
+// 值到达（门控、未变不写、前后值）、平台门控对齐与清字段、设置与单房配置变更、房间增删与
+// 分类内重排、分类增删改与分类间重排、归类落点（追加到目标分组末尾）、初始化迁移，
+// 以及串行队列对「读改写交错」的消除（丢更新是本 module 存在的理由）。
 'use strict';
 
 const { test } = require('node:test');
@@ -11,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const { RoomStore, ROOM_STORE_DEFAULTS } = require('../lib/room-store.js');
 const { RoomIdentity } = require('../lib/room-identity.js');
+const { RoomCategories } = require('../lib/room-categories.js');
 
 // === 测试替身：内存存储 port（get/set 深拷贝，可选每次操作让出一个宏任务以放大交错）===
 
@@ -44,7 +46,7 @@ function createMemoryStorage(initial = {}, { asyncTick = false } = {}) {
 function createStore(initial = {}, options = {}) {
   const storage = createMemoryStorage(initial, options);
   const resolveNickname = options.resolveNickname || (async () => ({ ok: false }));
-  return { store: new RoomStore({ storage, resolveNickname, identity: RoomIdentity }), storage };
+  return { store: new RoomStore({ storage, resolveNickname, identity: RoomIdentity, categoryRules: RoomCategories }), storage };
 }
 
 const room = (platform, roomId, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
@@ -57,10 +59,23 @@ test('snapshot：缺键补默认值，平台观众数开关解算为布尔，旧
   const snap = await store.snapshot();
   assert.deepEqual(snap.rooms, []);
   assert.deepEqual(snap.streamers, []);
+  assert.deepEqual(snap.categories, []);
   assert.equal(snap.settings.refreshInterval, 60);
   assert.equal(snap.settings.fetchDouyuViewerCount, true);
   assert.equal(snap.settings.fetchBilibiliViewerCount, true);
   assert.ok(!('fetchViewerCount' in snap.settings), '旧总开关不应出现在快照里');
+});
+
+test('snapshot：快照带上分类列表且深冻结（老安装缺 categories 键时回退空数组）', async () => {
+  const legacy = await createStore({ rooms: [], streamers: [], settings: {} }).store.snapshot();
+  assert.deepEqual(legacy.categories, [], '老安装缺键走读侧回退，不重写用户数据');
+
+  const { store } = createStore({ categories: [{ id: 'c1', name: '游戏' }] });
+  const snap = await store.snapshot();
+  assert.deepEqual(snap.categories, [{ id: 'c1', name: '游戏' }]);
+  assert.ok(Object.isFrozen(snap.categories));
+  assert.ok(Object.isFrozen(snap.categories[0]));
+  assert.throws(() => { snap.categories.push({ id: 'c2', name: '音乐' }); }, TypeError);
 });
 
 test('snapshot：旧总开关 false 回退到两个平台开关；新字段一旦写入即以新字段为准', async () => {
@@ -457,24 +472,170 @@ test('removeRoom：rooms 与主播快照在同一次写入里删净，重复移�
   assert.equal(storage.writes.length, 1);
 });
 
-// === 房间重排 ===
+// === 房间重排（分类内；见 ADR-0008 第四条）===
 
-test('reorderRooms：按目标顺序重排，未列出的接尾，主播快照同步且缺条目补占位', async () => {
+test('reorderRooms：只置换该分类成员所占的槽位，其余房间位置不动，主播快照同步且缺条目补占位', async () => {
   const { store, storage } = createStore({
-    rooms: [room('douyu', '100'), room('douyu', '101'), room('bilibili', '200')],
-    streamers: [streamer('douyu', '100'), streamer('douyu', '101'), streamer('douyu', '999')]
+    categories: [{ id: 'c1', name: '游戏' }],
+    rooms: [room('douyu', '100', { categoryId: 'c1' }), room('douyu', '101'), room('bilibili', '200', { categoryId: 'c1' })],
+    streamers: [streamer('douyu', '100'), streamer('bilibili', '200')]
   });
-  const result = await store.reorderRooms([{ platform: 'bilibili', roomId: '200' }]);
+  const result = await store.reorderRooms({ categoryId: 'c1', order: [{ platform: 'bilibili', roomId: '200' }] });
   assert.equal(result.ok, true);
   const raw = storage.raw();
-  assert.deepEqual(raw.rooms.map(r => `${r.platform}_${r.roomId}`), ['bilibili_200', 'douyu_100', 'douyu_101'], '未列出的按原相对顺序接尾');
-  assert.deepEqual(raw.streamers.map(s => `${s.platform}_${s.roomId}`), ['bilibili_200', 'douyu_100', 'douyu_101']);
-  assert.equal(raw.streamers[0].online, false, '缺主播快照的房间补占位等下一轮填充');
-  assert.equal(raw.streamers[0].nickname, undefined, '占位没有昵称，等轮询填充');
+  assert.deepEqual(raw.rooms.map(r => `${r.platform}_${r.roomId}`), ['bilibili_200', 'douyu_101', 'douyu_100'], '分类成员只换槽位，未分类房间留在原槽位');
+  assert.deepEqual(raw.streamers.map(s => `${s.platform}_${s.roomId}`), ['bilibili_200', 'douyu_101', 'douyu_100']);
+  assert.equal(raw.streamers[1].online, false, '缺主播快照的房间补占位等下一轮填充');
+  assert.equal(raw.streamers[1].nickname, undefined, '占位没有昵称，等轮询填充');
+});
 
-  const same = await store.reorderRooms([{ platform: 'bilibili', roomId: '200' }, { platform: 'douyu', roomId: '100' }, { platform: 'douyu', roomId: '101' }]);
-  assert.equal(same.changed, false, '顺序没变不写盘');
-  assert.equal(storage.writes.length, 1, '只有第一次重排落盘');
+test('reorderRooms：未列出的成员按原相对顺序接尾，未知引用与别分类的引用忽略，重复折叠', async () => {
+  const { store, storage } = createStore({
+    categories: [{ id: 'c1', name: '游戏' }],
+    rooms: [
+      room('douyu', '1', { categoryId: 'c1' }),
+      room('douyu', '2'),
+      room('douyu', '3', { categoryId: 'c1' }),
+      room('douyu', '4', { categoryId: 'c1' })
+    ]
+  });
+  await store.reorderRooms({
+    categoryId: 'c1',
+    order: [
+      { platform: 'douyu', roomId: '4' },
+      { platform: 'douyu', roomId: '4' },      // 重复折叠
+      { platform: 'douyu', roomId: '2' },      // 属于未分类，忽略
+      { platform: 'douyu', roomId: '999' }     // 未知引用，忽略
+    ]
+  });
+  assert.deepEqual(storage.raw().rooms.map(r => r.roomId), ['4', '2', '1', '3'], '未列出的成员按原相对顺序接尾');
+});
+
+test('reorderRooms：顺序没变不写盘；分类查不到时按未分类段重排', async () => {
+  const { store, storage } = createStore({
+    categories: [{ id: 'c1', name: '游戏' }],
+    rooms: [room('douyu', '1', { categoryId: 'c1' }), room('douyu', '2')]
+  });
+  const same = await store.reorderRooms({ categoryId: 'c1', order: [{ platform: 'douyu', roomId: '1' }] });
+  assert.equal(same.changed, false);
+  assert.equal(storage.writes.length, 0, '顺序没变不写盘');
+
+  await store.reorderRooms({ categoryId: 'g不在分类列表里', order: [{ platform: 'douyu', roomId: '2' }] });
+  assert.deepEqual(storage.raw().rooms.map(r => r.roomId), ['1', '2'], '未知分类 id 回落未分类段重排');
+
+  assert.deepEqual(await store.reorderRooms({ categoryId: 'c1', order: 'not-an-array' }), { ok: false, reason: 'invalid-order' });
+});
+
+// === 分类（一等实体：单独一份列表，房间只记 categoryId；见 ADR-0008）===
+
+test('addCategory：名称 trim 后落盘、id 由房间库生成，追加到分类列表末尾', async () => {
+  const { store, storage } = createStore({ categories: [{ id: 'c1', name: '游戏' }] });
+  const created = await store.addCategory('  音乐  ');
+  assert.equal(created.ok, true);
+  assert.deepEqual(created.category, { id: 'c2', name: '音乐' }, '前后空格被去掉');
+  assert.deepEqual(storage.raw().categories, [{ id: 'c1', name: '游戏' }, { id: 'c2', name: '音乐' }]);
+});
+
+test('addCategory：空名 / 超长 / 重名 / 保留名「未分类」都被拒，不写盘', async () => {
+  const { store, storage } = createStore({ categories: [{ id: 'c1', name: '游戏' }] });
+  assert.equal((await store.addCategory('   ')).error, '分类名不能为空');
+  assert.equal((await store.addCategory('x'.repeat(RoomCategories.NAME_MAX_LENGTH + 1))).error, `分类名最多 ${RoomCategories.NAME_MAX_LENGTH} 个字`);
+  assert.equal((await store.addCategory('游戏')).error, '已有同名分类');
+  assert.equal((await store.addCategory(' 游戏 ')).error, '已有同名分类', 'trim 后再判重名');
+  assert.equal((await store.addCategory('未分类')).error, '「未分类」是保留名，不能作为分类名');
+  assert.equal(storage.writes.length, 0);
+});
+
+test('renameCategory：一次生效、改同名不算变更不写盘，重名（排除自身）与保留名被拒', async () => {
+  const { store, storage } = createStore({ categories: [{ id: 'c1', name: '游戏' }, { id: 'c2', name: '音乐' }] });
+  const renamed = await store.renameCategory('c1', ' 单机游戏 ');
+  assert.equal(renamed.ok, true);
+  assert.equal(storage.raw().categories[0].name, '单机游戏');
+
+  const same = await store.renameCategory('c2', '音乐');
+  assert.equal(same.changed, false, '改同名不算变更');
+  assert.equal(storage.writes.length, 1);
+
+  assert.equal((await store.renameCategory('c2', '单机游戏')).error, '已有同名分类');
+  assert.equal((await store.renameCategory('c2', '未分类')).error, '「未分类」是保留名，不能作为分类名');
+  assert.equal((await store.renameCategory('c1', '单机游戏')).ok, true, '排除自身后改名通过');
+  assert.equal((await store.renameCategory('不存在', 'x')).error, '分类不存在');
+});
+
+test('removeCategory：分类与其下房间的 categoryId 在同一次写入里落盘，房间回落未分类并接在未分类末尾', async () => {
+  const { store, storage } = createStore({
+    categories: [{ id: 'c1', name: '游戏' }],
+    rooms: [
+      room('douyu', '1', { categoryId: 'c1' }),
+      room('douyu', '2'),
+      room('douyu', '3', { categoryId: 'c1' }),
+      room('douyu', '4')
+    ]
+  });
+  const result = await store.removeCategory('c1');
+  assert.deepEqual(result, { ok: true, changed: true, affected: 2 });
+  assert.equal(storage.writes.length, 1, '分类列表与房间改动在同一次写入里');
+  assert.deepEqual(storage.writes[0].sort(), ['categories', 'rooms']);
+  assert.deepEqual(storage.raw().categories, []);
+  assert.deepEqual(storage.raw().rooms.map(r => r.roomId), ['2', '4', '1', '3'], '回落的房间本身不删，按原相对顺序接在未分类末尾');
+  assert.ok(!('categoryId' in storage.raw().rooms[2]));
+
+  const again = await store.removeCategory('c1');
+  assert.deepEqual(again, { ok: true, changed: false, affected: 0 }, '重复删除幂等');
+  assert.equal(storage.writes.length, 1);
+});
+
+test('removeCategory：分类下没有房间时只写分类列表', async () => {
+  const { store, storage } = createStore({ categories: [{ id: 'c1', name: '空分类' }], rooms: [room('douyu', '1')] });
+  const result = await store.removeCategory('c1');
+  assert.equal(result.affected, 0);
+  assert.deepEqual(storage.writes, [['categories']]);
+});
+
+test('reorderCategories：按目标顺序重排，未列出的接尾，未知引用忽略，顺序没变不写盘', async () => {
+  const { store, storage } = createStore({
+    categories: [{ id: 'c1', name: '一' }, { id: 'c2', name: '二' }, { id: 'c3', name: '三' }]
+  });
+  await store.reorderCategories(['c3', 'c3', '未知', 'c1']);
+  assert.deepEqual(storage.raw().categories.map(c => c.id), ['c3', 'c1', 'c2'], '未列出的 c2 按原相对顺序接尾');
+
+  const same = await store.reorderCategories(['c3', 'c1', 'c2']);
+  assert.equal(same.changed, false);
+  assert.equal(storage.writes.length, 1);
+  assert.deepEqual(await store.reorderCategories('not-an-array'), { ok: false, reason: 'invalid-order' });
+});
+
+test('setRoomCategory：换分类后追加到目标分类末尾，同组不算变更，未知分类 id 回落未分类', async () => {
+  const { store, storage } = createStore({
+    categories: [{ id: 'c1', name: '游戏' }],
+    rooms: [room('douyu', '1', { categoryId: 'c1' }), room('douyu', '2'), room('douyu', '3', { categoryId: 'c1' })]
+  });
+  await store.setRoomCategory({ platform: 'douyu', roomId: '2' }, 'c1');
+  assert.deepEqual(storage.raw().rooms.map(r => r.roomId), ['1', '3', '2'], '新来的排到目标分类末尾');
+  assert.equal(storage.raw().rooms[2].categoryId, 'c1');
+
+  const same = await store.setRoomCategory({ platform: 'douyu', roomId: '2' }, 'c1');
+  assert.equal(same.changed, false, '已经在该分组里，不借机重排');
+  assert.equal(storage.writes.length, 1);
+
+  const fallback = await store.setRoomCategory({ platform: 'douyu', roomId: '1' }, '不存在的分类');
+  assert.equal(fallback.ok, true);
+  assert.ok(!('categoryId' in storage.raw().rooms.find(r => r.roomId === '1')), '查不到分类 id 回落未分类');
+  assert.deepEqual(await store.setRoomCategory({ platform: 'douyu', roomId: '9999' }, 'c1'), { ok: false, reason: 'not-found' });
+});
+
+test('addRoom：新房间落到所选分类末尾；未知分类 id 回落未分类（不因此拒绝添加）', async () => {
+  const resolveNickname = async () => ({ ok: true, nickname: '主播' });
+  const { store, storage } = createStore({ categories: [{ id: 'c1', name: '游戏' }] }, { resolveNickname });
+
+  const added = await store.addRoom({ roomId: '100', platform: 'douyu', categoryId: 'c1' });
+  assert.equal(added.ok, true);
+  assert.equal(added.room.categoryId, 'c1');
+
+  const unknown = await store.addRoom({ roomId: '101', platform: 'douyu', categoryId: '早就删了' });
+  assert.equal(unknown.ok, true);
+  assert.ok(!('categoryId' in unknown.room), '未知分类 id 回落未分类，房间本体照常加入');
+  assert.deepEqual(storage.raw().rooms.map(r => r.roomId), ['100', '101'], '新房间追加在末尾（即所属分组末尾）');
 });
 
 // === 初始化 ===
@@ -485,11 +646,26 @@ test('init：首启写入默认值，之后幂等不再写', async () => {
   assert.deepEqual(first, { migrated: false, seeded: true });
   assert.deepEqual(storage.raw().settings, ROOM_STORE_DEFAULTS.settings);
   assert.deepEqual(storage.raw().rooms, []);
+  assert.deepEqual(storage.raw().categories, [], '四个键俱缺才写默认值（含分类列表）');
   assert.equal(storage.writes.length, 1);
 
   const second = await store.init();
   assert.deepEqual(second, { migrated: false, seeded: false });
   assert.equal(storage.writes.length, 1);
+});
+
+test('init：老安装有前三个键但缺 categories 时不 seed（升级路径走读侧回退，不重写用户数据）', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '100')],
+    streamers: [streamer('douyu', '100')],
+    settings: { refreshInterval: 60 }
+  });
+  const result = await store.init();
+  assert.deepEqual(result, { migrated: false, seeded: false });
+  const raw = storage.raw();
+  assert.ok(!('categories' in raw), '不因缺这个键而整份重写默认值');
+  assert.equal(raw.rooms.length, 1, '存量房间原样保留');
+  assert.deepEqual((await store.snapshot()).categories, [], '读侧回退空数组');
 });
 
 test('init：旧格式（无 platform）的 rooms / streamers 迁移为 douyu', async () => {
