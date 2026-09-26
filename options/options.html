@@ -157,8 +157,16 @@
         </span>
         <input type="checkbox" id="fetchBilibiliViewerCount" checked>
       </label>
+      <div class="cell-divider"></div>
+      <label class="toggle-row">
+        <span class="row-text">
+          <span class="row-title">今日统计</span>
+          <span class="row-desc">在线列表显示斗鱼房间当天累计的弹幕 / 礼物数据；数据来自第三方数据站 doseeing（不是斗鱼官方），关闭后不再请求该站</span>
+        </span>
+        <input type="checkbox" id="todayStatsEnabled" checked>
+      </label>
     </section>
-    <p class="group-hint">两项观众数开关独立控制对应平台的采样（每 10 分钟一次）；关闭后拿不到数值，对应平台的观众数提醒不会触发</p>
+    <p class="group-hint">两项观众数开关独立控制对应平台的采样（每 10 分钟一次）；关闭后拿不到数值，对应平台的观众数提醒不会触发。今日统计是把「你在监控哪些斗鱼房间」以匿名请求发给第三方数据站 doseeing（每 5 分钟一次），只读展示、不产生任何通知；关闭后扩展完全不请求该站，已取到的数字保留在本地，重新打开最多等一个周期就能看到</p>
   </div>
 
   <script src="../lib/room-identity.js"></script>
@@ -166,6 +174,7 @@
   <script src="../lib/viewer-alert.js"></script>
   <script src="../lib/danmaku-surge.js"></script>
   <script src="../lib/highlight-alert.js"></script>
+  <script src="../lib/today-stats.js"></script>
   <script src="../lib/room-store.js"></script>
   <script src="options.js"></script>
 </body>

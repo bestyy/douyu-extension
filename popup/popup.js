@@ -55,7 +55,8 @@ async function loadData() {
   try {
     const [snapshot, extra] = await Promise.all([
       roomStore.snapshot(),
-      chrome.storage.local.get(['watchQueued', 'cookie']) // 盯守排队视图与旧版 Cookie 提示不在房间库的键内
+      // 盯守排队视图、今日统计（编排的键）与旧版 Cookie 提示都不在房间库的键内
+      chrome.storage.local.get(['watchQueued', 'cookie', 'todayStats'])
     ]);
     const data = { ...snapshot, ...extra };
     document.getElementById('loading').classList.add('hidden');
@@ -93,7 +94,10 @@ async function loadData() {
     // 渲染列表
     updateMeter(onlineStreamers.length);
     document.getElementById('onlineCount').textContent = String(onlineStreamers.length);
-    renderStreamerList(document.getElementById('streamerList'), onlineStreamers);
+    renderStreamerList(document.getElementById('streamerList'), onlineStreamers, {
+      settings,
+      todayStats: data.todayStats
+    });
     document.getElementById('streamerList').classList.remove('hidden');
 
   } catch (err) {
@@ -123,7 +127,7 @@ function renderWatchQueue(queued) {
   hint.classList.remove('hidden');
 }
 
-function renderStreamerList(container, streamers) {
+function renderStreamerList(container, streamers, { settings = {}, todayStats = {} } = {}) {
   container.innerHTML = '';
 
   streamers.forEach(s => {
@@ -172,6 +176,7 @@ function renderStreamerList(container, streamers) {
         <span class="live-dot"></span>
         ${escapeHtml(s.category)}${statText}
       </div>
+      ${renderTodayStats(s, settings, todayStats)}
     `;
 
     card.appendChild(coverImg);
@@ -186,9 +191,30 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function formatNumber(num) {
+/**
+ * 今日统计行（该房「当天 0 点起累计」的弹幕数 / 弹幕人数、礼物金额 / 礼物人数，见 CONTEXT.md）
+ * 要不要显示整条判定交给 lib/today-stats.js 的 shouldShowTodayStats（总开关 → 跨零点保鲜）：
+ * 总开关关闭、当天还没取到数、或旧值跨过了本地零点，这一行整行不出现（不显示 0，也不留空行）。
+ * 只有斗鱼房间有这个形态的数据，B站卡片上不出现（平台门在取数端，落盘里根本没有它的条目）。
+ */
+function renderTodayStats(streamer, settings, todayStats) {
+  const record = (todayStats || {})[RoomIdentity.roomKey(streamer)];
+  const today = statsDateKey(new Date());
+  if (!shouldShowTodayStats({ settings, record, today })) {
+    return '';
+  }
+  return `
+      <div class="streamer-today">
+        今日 弹幕 <span class="stat-num">${formatNumber(record.chatPv)}</span> / ${formatNumber(record.chatUv)} 人
+        · 礼物 <span class="stat-num">${formatNumber(record.giftAmount, 2)}</span> 元 / ${formatNumber(record.giftUv)} 人
+      </div>
+  `;
+}
+
+/** 数字格式化：>= 1 万显示 x.x万（decimals 可指定小数位：金额用 2 位以示精度），否则原样 */
+function formatNumber(num, decimals = 1) {
   if (num >= 10000) {
-    return (num / 10000).toFixed(1) + '万';
+    return (num / 10000).toFixed(decimals) + '万';
   }
   return String(num);
 }

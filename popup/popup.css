@@ -364,6 +364,16 @@ header h1::before {
   margin-top: 5px;
 }
 
+/* 今日统计行 — 该房当天 0 点起累计的弹幕数 / 弹幕人数、礼物金额 / 礼物人数 */
+.streamer-today {
+  font-size: 11px;
+  color: var(--label-3);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 观众数 — 等宽读数 */
 .stat-num {
   font-family: var(--mono);

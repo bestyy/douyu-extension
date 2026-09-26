@@ -13,6 +13,7 @@ const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
 const highlightAlert = require('../../lib/highlight-alert.js');
+const todayStats = require('../../lib/today-stats.js');
 
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
@@ -98,10 +99,12 @@ function createFakeClient() {
  * 组装一个编排实例。
  * @param {object} [seed] rooms / streamers / settings / 其他键（notifiedRooms、_firstRun、watchQueued、highlightWatermarks…）
  * @param {object} [options] apiResults（平台 → {success,data} 或 (ids)=>结果）、highlightResults（平台 → {success,data:{highlights}} 或 (roomId)=>结果）、
+ *                           todayStatsResult（今日统计取数结果或 (roomId)=>结果）、
  *                           resolve（平台 → 昵称解析结果）、clock、isLoggedIn
  */
 function createHarness(seed = {}, options = {}) {
   const { apiResults = {}, highlightResults = {}, resolve = {}, clock, isLoggedIn = async () => false } = options;
+  const todayStatsResult = { value: options.todayStatsResult };
   // 所有键共用一个内存对象：房间库走多键 port，编排走单键 port
   const data = clone(seed);
 
@@ -157,6 +160,19 @@ function createHarness(seed = {}, options = {}) {
     }
   });
 
+  // 今日统计取数：一个模块对一个接口提供方，因此是独立 port（不进 apis[platform]，见 ADR-0007）
+  const todayStatsCalls = [];
+  const todayStatsApi = {
+    async fetchTodayStats(roomId) {
+      todayStatsCalls.push({ roomId });
+      const result = todayStatsResult.value;
+      if (result === undefined) {
+        return { success: true, data: { chatPv: 0, chatUv: 0, giftAmount: 0, giftUv: 0, ts: 0 } };
+      }
+      return clone(typeof result === 'function' ? result(roomId) : result);
+    }
+  };
+
   const tabApi = createFakeTabs();
   const bridge = new BiliBridgeChannel({
     storage: keyValue,
@@ -201,10 +217,11 @@ function createHarness(seed = {}, options = {}) {
     store,
     keyValue,
     apis,
+    todayStatsApi,
     clients,
     bridge,
     notifier,
-    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, ...todayStats, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
     identity: RoomIdentity,
     alarms: {
       create: (name, info) => alarms.push({ name, info: clone(info) }),
@@ -230,10 +247,13 @@ function createHarness(seed = {}, options = {}) {
     openedTabs,
     apiCalls,
     highlightCalls,
+    todayStatsCalls,
     /** 让某平台的下一轮轮询返回这些数据 */
     setApiResult(platform, result) { apiResults[platform] = result; },
     /** 让某平台的下一轮看点取数返回这些数据 */
-    setHighlightResult(platform, result) { highlightResults[platform] = result; }
+    setHighlightResult(platform, result) { highlightResults[platform] = result; },
+    /** 让下一轮今日统计取数返回这个结果（成功形状 / 失败形状 / (roomId)=>结果） */
+    setTodayStatsResult(result) { todayStatsResult.value = result; }
   };
 }
 
@@ -257,6 +277,11 @@ async function pollHighlights(harness) {
   await harness.orchestrator.onAlarm('highlightPoll');
 }
 
+/** 今日统计取数一次（走编排的 alarm 入口，与 poll / sample / settleSurge 同形） */
+async function pollTodayStats(harness) {
+  await harness.orchestrator.onAlarm('todayStatsPoll');
+}
+
 /** SW 唤醒：重建内存态（通道状态 + 盯守配置），生产里由入口在加载时调用 */
 async function boot(harness) {
   await harness.orchestrator.start();
@@ -274,6 +299,7 @@ module.exports = {
   sample,
   settleSurge,
   pollHighlights,
+  pollTodayStats,
   boot,
   douyuResult,
   bilibiliResult,

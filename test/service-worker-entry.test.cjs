@@ -21,8 +21,10 @@ const LIB_FILES = [
   'viewer-alert',
   'danmaku-surge',
   'highlight-alert',
+  'today-stats',
   'douyu-api',
   'bilibili-api',
+  'doseeing-api',
   'douyu-barrage',
   'bilibili-barrage',
   'bili-bridge-channel',
@@ -151,14 +153,46 @@ test('消息接线：编排应答，未知消息回 ok:false；设置变更按�
   assert.equal(stub.alarms.find(a => a.name === 'refreshRooms').info.periodInMinutes, 2);
 });
 
-test('alarm 接线：名字映射到轮询 / 采样 / 激增结算，失败不抛出', async () => {
+test('alarm 接线：名字映射到轮询 / 采样 / 激增结算 / 今日统计取数，失败不抛出', async () => {
   const stub = createChromeStub();
   loadEntry(stub.chrome);
   const fire = name => Promise.all(stub.listeners.alarm.map(fn => fn({ name })));
   await fire('refreshRooms');
   await fire('sampleViewerCounts');
   await fire('danmakuSurgeTick');
+  await fire('highlightPoll');
+  await fire('todayStatsPoll');
   await tick();
+});
+
+test('今日统计取数 port 接线：alarm 触发时按房间号请求第三方站点，落盘的是换算成元的金额', async () => {
+  const stub = createChromeStub();
+  const sandbox = loadEntry(stub.chrome);
+  // 房间库快照直接铺进存储（省掉一次轮询）：一个开播中的斗鱼房间
+  stub.data.rooms = [{ roomId: '12899565', nickname: '昵称', platform: 'douyu', notify: false }];
+  stub.data.streamers = [{ roomId: '12899565', nickname: '昵称', platform: 'douyu', online: true }];
+
+  // 入口沙箱里的 fetch 换成录制版：调用时取全局，因此加载之后再替换也生效
+  const calls = [];
+  sandbox.fetch = async url => {
+    calls.push(url);
+    return {
+      text: async () => JSON.stringify({
+        stats: [{ 'chat.pv': 95013, 'chat.uv': 7459, 'gift.paid.price': 1561490, 'gift.paid.uv': 198 }],
+        room: { rid: '12899565' }
+      })
+    };
+  };
+
+  // 入口的 alarm 监听器不 await 编排（Chrome 也不用），触发后等它跑完
+  stub.listeners.alarm.forEach(fn => fn({ name: 'todayStatsPoll' }));
+  await tick();
+
+  assert.deepEqual(calls, ['https://www.doseeing.com/api/room_stat?room=12899565&hours=today'], '装配的 port 指向真实 vendor 模块');
+  assert.equal(stub.data.todayStats.douyu_12899565.chatPv, 95013);
+  assert.equal(stub.data.todayStats.douyu_12899565.giftAmount, 15614.9, '分换成元由 vendor 模块完成');
+  assert.equal(stub.data.todayStats.douyu_12899565.giftUv, 198);
+  assert.match(stub.data.todayStats.douyu_12899565.date, /^\d{4}-\d{2}-\d{2}$/, '带本地日期戳');
 });
 
 test('通知点击接线：开播通知与派生 ID 都进直播间', async () => {

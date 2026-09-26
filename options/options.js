@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const viewerAlertEnabled = document.getElementById('viewerAlertEnabled');
   const surgeAlertEnabled = document.getElementById('surgeAlertEnabled');
   const highlightAlertEnabled = document.getElementById('highlightAlertEnabled');
+  const todayStatsEnabled = document.getElementById('todayStatsEnabled');
   const surgeMultiple = document.getElementById('surgeMultiple');
   const surgeMinBaseline = document.getElementById('surgeMinBaseline');
   const surgeCooldownMinutes = document.getElementById('surgeCooldownMinutes');
@@ -50,6 +51,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   viewerAlertEnabled.checked = isViewerAlertEnabled(settings);
   surgeAlertEnabled.checked = isSurgeAlertEnabled(settings);
   highlightAlertEnabled.checked = isHighlightAlertEnabled(settings);
+  todayStatsEnabled.checked = isTodayStatsEnabled(settings);
   // 四个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
   const surgeSettings = normalizeSurgeSettings(settings);
   surgeMultiple.value = surgeSettings.multiple;
@@ -258,6 +260,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   highlightAlertEnabled.addEventListener('change', async () => {
     await patchSettings({ highlightAlertEnabled: highlightAlertEnabled.checked });
     await renderRoomList();
+  });
+
+  // 今日统计总开关：即时生效（SW 收敛取数 alarm 并停止请求第三方站点）；关掉后不请求、不展示，数字保留
+  todayStatsEnabled.addEventListener('change', async () => {
+    await patchSettings({ todayStatsEnabled: todayStatsEnabled.checked });
   });
 
   // 四个激增判定参数：改动即保存（与页面其余控件一致），失焦/回车时归一化并回写生效值
