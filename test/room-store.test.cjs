@@ -536,13 +536,15 @@ test('addCategory：名称 trim 后落盘、id 由房间库生成，追加到分
   assert.deepEqual(storage.raw().categories, [{ id: 'c1', name: '游戏' }, { id: 'c2', name: '音乐' }]);
 });
 
-test('addCategory：空名 / 超长 / 重名 / 保留名「未分类」都被拒，不写盘', async () => {
+test('addCategory：空名 / 超长 / 重名 / 保留名「未分类」「全部」都被拒，不写盘', async () => {
   const { store, storage } = createStore({ categories: [{ id: 'c1', name: '游戏' }] });
   assert.equal((await store.addCategory('   ')).error, '分类名不能为空');
   assert.equal((await store.addCategory('x'.repeat(RoomCategories.NAME_MAX_LENGTH + 1))).error, `分类名最多 ${RoomCategories.NAME_MAX_LENGTH} 个字`);
   assert.equal((await store.addCategory('游戏')).error, '已有同名分类');
   assert.equal((await store.addCategory(' 游戏 ')).error, '已有同名分类', 'trim 后再判重名');
   assert.equal((await store.addCategory('未分类')).error, '「未分类」是保留名，不能作为分类名');
+  assert.equal((await store.addCategory('全部')).error, '「全部」是保留名，不能作为分类名');
+  assert.equal((await store.addCategory(' 全部 ')).error, '「全部」是保留名，不能作为分类名', 'trim 后再判保留名');
   assert.equal(storage.writes.length, 0);
 });
 
@@ -558,6 +560,7 @@ test('renameCategory：一次生效、改同名不算变更不写盘，重名（
 
   assert.equal((await store.renameCategory('c2', '单机游戏')).error, '已有同名分类');
   assert.equal((await store.renameCategory('c2', '未分类')).error, '「未分类」是保留名，不能作为分类名');
+  assert.equal((await store.renameCategory('c2', '全部')).error, '「全部」是保留名，不能作为分类名');
   assert.equal((await store.renameCategory('c1', '单机游戏')).ok, true, '排除自身后改名通过');
   assert.equal((await store.renameCategory('不存在', 'x')).error, '分类不存在');
 });

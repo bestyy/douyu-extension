@@ -4,6 +4,8 @@
 // 设置变更发消息给 SW（PATCH_SETTINGS），不写 storage。
 // 房间标识（直播间 URL、平台标签、观众数指标名与存储字段）来自 lib/room-identity.js 的
 // 全局 `RoomIdentity`，弹窗不自己拼字符串，也不自查存储形状（见 CONTEXT.md「房间标识」）。
+// 分类栏（左栏）是视图筛选器：条目构成与选中项的回落判定都来自 lib/room-categories.js 的
+// 全局 `RoomCategories`，切换只改看哪一段、经 SW 把选中项交给编排记住（见 ADR-0009）。
 
 const roomStore = new RoomStore({
   storage: {
@@ -13,6 +15,12 @@ const roomStore = new RoomStore({
   identity: RoomIdentity,
   categoryRules: RoomCategories
 });
+
+// 分类栏的状态：本次显示的选中项、键上记住的选中项、这次加载的渲染上下文（条目构成 + 渲染要用的数据）。
+// 切换分类只重渲染右侧（不重新读存储、不写房间库的键）；「显示」与「记忆」分开是因为回落只改显示
+let railSelection = null;
+let railRemembered = null;
+let railView = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   const streamerList = document.getElementById('streamerList');
@@ -51,13 +59,13 @@ async function loadData() {
   document.getElementById('noRoom').classList.add('hidden');
   document.getElementById('emptyState').classList.add('hidden');
   document.getElementById('errorState').classList.add('hidden');
-  document.getElementById('streamerList').classList.add('hidden');
+  document.getElementById('listArea').classList.add('hidden');
 
   try {
     const [snapshot, extra] = await Promise.all([
       roomStore.snapshot(),
-      // 盯守排队视图、今日统计（编排的键）与旧版 Cookie 提示都不在房间库的键内
-      chrome.storage.local.get(['watchQueued', 'cookie', 'todayStats'])
+      // 盯守排队视图、今日统计、弹窗分类栏的选中项（都归编排）与旧版 Cookie 提示都不在房间库的键内
+      chrome.storage.local.get(['watchQueued', 'cookie', 'todayStats', 'popupCategoryId'])
     ]);
     const data = { ...snapshot, ...extra };
     document.getElementById('loading').classList.add('hidden');
@@ -92,16 +100,27 @@ async function loadData() {
       return;
     }
 
-    // 渲染列表：按分类分段（未分类固定最前），只渲染当下有在播房间的分类
+    // 头部始终是全部在播房间的口径（仪表盘），不随分类栏的选中项变化；左栏每项有自己的在播数
     updateMeter(onlineStreamers.length);
     document.getElementById('onlineCount').textContent = String(onlineStreamers.length);
-    renderGroupedStreamers(document.getElementById('streamerList'), onlineStreamers, {
-      rooms: rooms,
-      categories: data.categories,
-      settings,
-      todayStats: data.todayStats
+
+    // 主播快照不带分类归属，按房间复合键从房间快照补上 categoryId
+    const roomByKey = new Map(rooms.map(r => [RoomIdentity.roomKey(r), r]));
+    const onlineEntries = onlineStreamers.map(s => {
+      const room = roomByKey.get(RoomIdentity.roomKey(s));
+      return room ? { ...s, categoryId: room.categoryId } : s;
     });
-    document.getElementById('streamerList').classList.remove('hidden');
+
+    // 条目构成整份来自纯模块（弹窗只渲染它的结论）；键上的原值就是记忆（缺键即默认「全部」），
+    // 本次显示再按回落规则从记忆解算——两者分开，回落才不会把记忆抹掉
+    const items = RoomCategories.buildCategoryRail({ rooms: onlineEntries, categories: data.categories });
+    railRemembered = data.popupCategoryId === undefined || data.popupCategoryId === null
+      ? RoomCategories.ALL_ID
+      : String(data.popupCategoryId);
+    railSelection = RoomCategories.resolveRailSelection(railRemembered, items);
+    railView = { items, settings, todayStats: data.todayStats };
+    renderRailAndList();
+    document.getElementById('listArea').classList.remove('hidden');
 
   } catch (err) {
     updateMeter(0);
@@ -131,41 +150,94 @@ function renderWatchQueue(queued) {
 }
 
 /**
- * 在线列表按分类分段渲染：分组顺序与「隐藏空分组」都交给 lib/room-categories.js 的分组投影
- * （弹窗传 hideEmptyGroups=true，因此只留下当下有在播房间的分类）。标题是分类名 + 在播数，
- * 「未分类」固定最前；只要这个界面有房间就始终显示标题（哪怕只有一个分组），且不支持折叠。
- * 卡片之外的一切（今日统计、平台标签、排队提示、空状态）不变，只是被装进分组里。
+ * 渲染分类栏与右侧列表（条目构成整份来自纯模块，这里只渲染它的结论）。选中的分类在此生效：
+ * - 选中「全部」：右侧按分类分段、显示分类标题（未分类固定最前），与加宽前观感一致
+ * - 选中某个具体分类或「未分类」：右侧只渲染该段的房间，不显示分类标题（左栏已经表达过分类）
+ * 右侧始终只显示开播中的房间，分段标题只是标题、不可点。
  */
-function renderGroupedStreamers(container, onlineStreamers, { rooms = [], categories = [], settings = {}, todayStats = {} } = {}) {
+function renderRailAndList() {
+  if (!railView) return;
+  const { items, settings, todayStats } = railView;
+
+  renderCategoryRail(items, railSelection);
+
+  const container = document.getElementById('streamerList');
   container.innerHTML = '';
-
-  // 主播快照不带分类归属，按房间复合键从房间快照补上 categoryId
-  const roomByKey = new Map(rooms.map(r => [RoomIdentity.roomKey(r), r]));
-  const grouped = onlineStreamers.map(s => {
-    const room = roomByKey.get(RoomIdentity.roomKey(s));
-    return room ? { ...s, categoryId: room.categoryId } : s;
+  const all = railSelection === RoomCategories.ALL_ID;
+  const segments = all ? items.filter(item => item.id !== RoomCategories.ALL_ID) : items.filter(item => item.id === railSelection);
+  segments.forEach(segment => {
+    if (all) {
+      container.appendChild(renderCategorySection(segment, { settings, todayStats }));
+      return;
+    }
+    segment.rooms.forEach(s => container.appendChild(renderStreamerCard(s, { settings, todayStats })));
   });
-  const groups = RoomCategories.buildRoomGroups({ rooms: grouped, categories, hideEmptyGroups: true });
+}
 
-  groups.forEach(group => {
-    const section = document.createElement('div');
-    section.className = 'category-section';
-
-    const head = document.createElement('div');
-    head.className = 'category-head';
+/** 左栏：条目是按钮语义（可键盘聚焦 / 选中），选中项有选中底；不带任何写操作 */
+function renderCategoryRail(items, selectedId) {
+  const rail = document.getElementById('categoryRail');
+  rail.innerHTML = '';
+  items.forEach(item => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rail-item';
+    if (item.id === selectedId) btn.setAttribute('aria-current', 'true');
     const name = document.createElement('span');
-    name.className = 'category-name';
-    name.textContent = group.name;
+    name.className = 'rail-name';
+    name.textContent = item.name;
+    name.title = item.name; // 单行截断后悬停看全名
     const count = document.createElement('span');
-    count.className = 'category-count';
-    count.textContent = String(group.onlineCount);
-    head.appendChild(name);
-    head.appendChild(count);
-    section.appendChild(head);
-
-    group.rooms.forEach(s => section.appendChild(renderStreamerCard(s, { settings, todayStats })));
-    container.appendChild(section);
+    count.className = 'rail-count';
+    count.textContent = String(item.onlineCount);
+    btn.appendChild(name);
+    btn.appendChild(count);
+    btn.addEventListener('click', e => selectCategory(item.id, { restoreFocus: e.detail === 0 }));
+    rail.appendChild(btn);
   });
+}
+
+/**
+ * 切换选中项：只重渲染右侧，并把选中项交给编排记住（弹窗不写 storage，见 ADR-0003 / ADR-0009）。
+ * 「记住的选中项」与「本次显示的选中项」是两回事：回落只改后者。因此两者要分开比——
+ * 记忆是 c1、本次已回落到「全部」时，用户明确点「全部」必须写进记忆（否则那个分类再有人开播
+ * 会跳回去，等于把用户这一次的选择吞掉）。键盘激活（detail 为 0）时把焦点交回重渲染后的同一项，
+ * 免得每换一次都要从头上 Tab 一遍。
+ */
+function selectCategory(categoryId, { restoreFocus = false } = {}) {
+  if (!railView) return;
+  if (railSelection !== categoryId) {
+    railSelection = categoryId;
+    renderRailAndList();
+    if (restoreFocus) {
+      const selected = document.querySelector('#categoryRail .rail-item[aria-current="true"]');
+      if (selected) selected.focus();
+    }
+  }
+  if (railRemembered === categoryId) return;
+  railRemembered = categoryId;
+  chrome.runtime.sendMessage({ type: 'SET_POPUP_CATEGORY', categoryId }).catch(() => {});
+}
+
+/** 一个分类段：标题（分类名 + 在播数）+ 该段卡片。标题只是标题，切换分类的唯一入口是左栏 */
+function renderCategorySection(group, { settings = {}, todayStats = {} } = {}) {
+  const section = document.createElement('div');
+  section.className = 'category-section';
+
+  const head = document.createElement('div');
+  head.className = 'category-head';
+  const name = document.createElement('span');
+  name.className = 'category-name';
+  name.textContent = group.name;
+  const count = document.createElement('span');
+  count.className = 'category-count';
+  count.textContent = String(group.onlineCount);
+  head.appendChild(name);
+  head.appendChild(count);
+  section.appendChild(head);
+
+  group.rooms.forEach(s => section.appendChild(renderStreamerCard(s, { settings, todayStats })));
+  return section;
 }
 
 /** 单张主播卡片（分组之外的一切既有内容不变） */
