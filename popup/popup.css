@@ -388,6 +388,7 @@ header h1::before {
 }
 
 .streamer-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -431,6 +432,34 @@ header h1::before {
   flex-shrink: 0;
   background: var(--fill);
   box-shadow: 0 0 0 1px var(--card-border), 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+/* 悬停封面预览：盖在被悬停卡片上居中的 16:9 画面（斗鱼 room_src / B站 keyframe，1280×720）。
+   卡片上那个圆图是同一张画面裁出的中心一小块，放大它看不出内容；预览改用完整画面回答
+   「在播什么」（见 CONTEXT.md「封面」）。position 落在 .streamer-card（relative）上，
+   越出右侧滚动容器的部分由该容器裁掉；visibility/opacity 过渡，初始不可见也不吃鼠标事件 */
+.streamer-preview {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: 260px;
+  height: 146px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--fill);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--card-border);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 0.16s ease, transform 0.16s cubic-bezier(0.22, 0.8, 0.3, 1), visibility 0.16s;
+}
+
+.streamer-preview.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%) scale(1);
 }
 
 .streamer-info {
@@ -677,4 +706,6 @@ footer button + button { border-left: 0.5px solid var(--sep); }
     animation: none !important;
   }
   #refreshBtn:hover svg { transform: none; }
+  .streamer-preview { transition: opacity 0.01s, visibility 0.01s; }
+  .streamer-preview.visible { transform: translate(-50%, -50%); }
 }

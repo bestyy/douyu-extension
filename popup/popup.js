@@ -260,12 +260,53 @@ function renderStreamerCard(s, { settings = {}, todayStats = {} } = {}) {
   coverImg.alt = s.nickname;
   coverImg.referrerPolicy = 'no-referrer';
   const fallbackSrc = chrome.runtime.getURL('icons/icon48.png');
+  // 拿到有效封面时才给悬停预览：封面为空、或加载失败回退占位图的房间不弹
+  // （把 44px 占位图标放大到 260px 只是噪声，回答不了「在播什么」，见 CONTEXT.md「封面」）
+  let hasCover = !!s.coverUrl;
   coverImg.addEventListener('error', () => {
+    hasCover = false;
     if (coverImg.src !== fallbackSrc) {
       coverImg.src = fallbackSrc;
     }
   });
   coverImg.src = s.coverUrl || fallbackSrc;
+
+  // 悬停头像浮出 16:9 封面预览：盖在被悬停卡片上居中。预览比卡片高，列表首尾几张会被滚动
+  // 容器裁掉一半，故出现前按容器把中心夹进可视区（只夹垂直，260px 宽在列内放得下）。
+  // 延迟 200ms 出现，躲开鼠标扫过一整排卡片时的连闪；移开即收。
+  const preview = document.createElement('img');
+  preview.className = 'streamer-preview';
+  preview.alt = '';
+  preview.referrerPolicy = 'no-referrer';
+  if (s.coverUrl) preview.src = s.coverUrl;
+  let previewTimer = null;
+  const showPreview = () => {
+    if (!hasCover) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      const list = document.getElementById('streamerList');
+      if (list) {
+        const listRect = list.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const half = preview.offsetHeight / 2;
+        const centerY = cardRect.top + cardRect.height / 2;
+        const clampedY = Math.min(
+          Math.max(centerY, listRect.top + half),
+          listRect.bottom - half
+        );
+        preview.style.top = `${clampedY - cardRect.top}px`;
+      }
+      preview.classList.add('visible');
+    }, 200);
+  };
+  const hidePreview = () => {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+    preview.classList.remove('visible');
+  };
+  coverImg.addEventListener('mouseenter', showPreview);
+  // 移开整张卡片才收（而非移开头像就收）：预览盖住的正是头像位置，否则鼠标一挪去细看就消失了
+  card.addEventListener('mouseleave', hidePreview);
 
   const infoDiv = document.createElement('div');
   infoDiv.className = 'streamer-info';
@@ -292,6 +333,7 @@ function renderStreamerCard(s, { settings = {}, todayStats = {} } = {}) {
 
   card.appendChild(coverImg);
   card.appendChild(infoDiv);
+  card.appendChild(preview);
   return card;
 }
 
