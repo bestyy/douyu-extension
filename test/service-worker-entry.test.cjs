@@ -38,7 +38,7 @@ function createChromeStub() {
   const alarms = [];
   const notifications = [];
   const openedTabs = [];
-  const listeners = { installed: [], alarm: [], message: [], notifClick: [], notifButton: [] };
+  const listeners = { installed: [], startup: [], alarm: [], message: [], notifClick: [], notifButton: [] };
   const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
   const chrome = {
@@ -58,11 +58,20 @@ function createChromeStub() {
     },
     runtime: {
       onInstalled: { addListener: fn => listeners.installed.push(fn) },
+      onStartup: { addListener: fn => listeners.startup.push(fn) },
       onMessage: { addListener: fn => listeners.message.push(fn) }
     },
     alarms: {
       create: (name, info) => alarms.push({ name, info: clone(info) }),
-      clear: () => { },
+      clear: name => {
+        const index = alarms.findIndex(a => a.name === name);
+        if (index !== -1) alarms.splice(index, 1);
+      },
+      // 真实 chrome.alarms.Alarm 的 periodInMinutes 在顶层，这里是 create 存下的 info
+      get: async name => {
+        const entry = alarms.find(a => a.name === name);
+        return entry && { name: entry.name, ...clone(entry.info) };
+      },
       onAlarm: { addListener: fn => listeners.alarm.push(fn) }
     },
     notifications: {
@@ -114,12 +123,13 @@ function loadEntry(chrome) {
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-test('入口装配：加载即注册五类监听、构建依赖并启动重建（不触网）', async () => {
+test('入口装配：加载即注册六类监听、构建依赖并启动重建（不触网）', async () => {
   const stub = createChromeStub();
   loadEntry(stub.chrome);
   await tick();
 
   assert.equal(stub.listeners.installed.length, 1);
+  assert.equal(stub.listeners.startup.length, 1);
   assert.equal(stub.listeners.alarm.length, 1);
   assert.equal(stub.listeners.message.length, 1);
   assert.equal(stub.listeners.notifClick.length, 1);
@@ -138,6 +148,25 @@ test('onInstalled：房间库写入默认值、置首启标记、建两个 alarm
   assert.equal(stub.data._firstRun, true);
   assert.deepEqual(stub.alarms.map(a => a.name).sort(), ['refreshRooms', 'sampleViewerCounts']);
   assert.equal(stub.alarms.find(a => a.name === 'refreshRooms').info.periodInMinutes, 1);
+});
+
+test('onStartup：浏览器重启后把被清掉的基础 alarm 重新建起来（onInstalled 不会重跑）', async () => {
+  const stub = createChromeStub();
+  loadEntry(stub.chrome);
+  await stub.listeners.installed[0]();
+  await tick();
+
+  // 浏览器整个重启：Chrome 不保证 alarm 存活，这里把注册表清空模拟它被清掉
+  stub.alarms.length = 0;
+
+  await stub.listeners.startup[0]();
+  await tick();
+
+  assert.deepEqual(
+    stub.alarms.map(a => a.name).sort(),
+    ['refreshRooms', 'sampleViewerCounts'],
+    'onStartup 把基础轮询补回来，否则开播状态永久停摆'
+  );
 });
 
 test('消息接线：编排应答，未知消息回 ok:false；设置变更按间隔重建 alarm', async () => {

@@ -11,7 +11,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createHarness, poll, pollTodayStats, douyuResult } = require('./support/harness.cjs');
+const { createHarness, poll, pollTodayStats, boot, douyuResult } = require('./support/harness.cjs');
 const { statsDateKey, isStatsFresh, shouldShowTodayStats } = require('../lib/today-stats.js');
 
 const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
@@ -200,6 +200,28 @@ test('只有 B站房间时不建取数 alarm（平台门与开关共同决定 al
   await poll(harness);
 
   assert.equal(harness.alarms.filter(a => a.name === 'todayStatsPoll').length, 0, '没有斗鱼房间就没有取数节拍');
+});
+
+test('SW 重启后不重建已在跑的取数 alarm：5 分钟节拍不被每分钟的唤醒重置', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu')],
+    streamers: [streamer('100', 'douyu')]
+  });
+  const statsAlarms = () => harness.alarms.filter(a => a.name === 'todayStatsPoll');
+
+  await poll(harness);
+  assert.equal(statsAlarms().length, 1, '首轮建一次');
+  const first = statsAlarms()[0];
+
+  // MV3 里开播轮询（默认每分钟）会反复回收重启 SW。重启后内存标记归零，若靠内存标志判断就会再 create
+  // 一次，而同名 create 的语义是重置计时——5 分钟的取数节拍永远等不到触发。存在性必须以 alarms.get 为准。
+  for (let i = 0; i < 10; i++) {
+    harness.restart();
+    await boot(harness);
+  }
+
+  assert.equal(statsAlarms().length, 1, '重启十次也不重建，计时不被打回原点');
+  assert.deepEqual(statsAlarms()[0], first, '仍是首轮那一个（周期未被重置）');
 });
 
 test('移除房间清掉该房条目：重新添加不会沿用旧数字', async () => {

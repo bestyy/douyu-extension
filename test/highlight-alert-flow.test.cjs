@@ -11,7 +11,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createHarness, poll, pollHighlights, douyuResult } = require('./support/harness.cjs');
+const { createHarness, poll, pollHighlights, boot, douyuResult } = require('./support/harness.cjs');
 
 const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
 const streamer = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, online: true, ...extra });
@@ -177,6 +177,27 @@ test('取数 alarm 随房间与开关收敛：有房间开启时创建一次、�
     ['highlightPoll', 'highlightPoll'],
     '总开关关闭时同样不留无用唤醒'
   );
+});
+
+test('SW 重启后不重建已在跑的取数 alarm：5 分钟节拍不被每分钟的唤醒重置', async () => {
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { highlightAlert: true })],
+    streamers: [streamer('100', 'douyu')]
+  });
+  const highlightAlarms = () => harness.alarms.filter(a => a.name === 'highlightPoll');
+
+  await poll(harness);
+  assert.equal(highlightAlarms().length, 1, '首轮建一次');
+  const first = highlightAlarms()[0];
+
+  // 同日今日统计：SW 被开播轮询反复回收重启，靠内存布尔量会再 create 一次（create 即重置计时）
+  for (let i = 0; i < 10; i++) {
+    harness.restart();
+    await boot(harness);
+  }
+
+  assert.equal(highlightAlarms().length, 1, '重启十次也不重建');
+  assert.deepEqual(highlightAlarms()[0], first, '仍是首轮那一个（周期未被重置）');
 });
 
 test('多个房间的水位各自独立：一个房的水位不影响另一个房', async () => {

@@ -161,6 +161,12 @@ chrome.runtime.onInstalled.addListener(() => {
   orchestrator.onInstalled().catch(e => console.error('初始化失败:', e));
 });
 
+// 浏览器整个启动：Chrome 不保证 alarm 跨浏览器重启存活（见 ADR-0011），onInstalled 又只在安装/更新时
+// 触发，因此这里补一次重建，否则装完扩展后重启浏览器会把开播轮询永久停摆。
+chrome.runtime.onStartup.addListener(() => {
+  orchestrator.onStartup().catch(e => console.error('启动重建失败:', e));
+});
+
 chrome.alarms.onAlarm.addListener(alarm => {
   orchestrator.onAlarm(alarm.name).catch(e => console.error('alarm 处理失败:', alarm.name, e));
 });

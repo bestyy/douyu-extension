@@ -87,7 +87,7 @@ git clone https://github.com/bestyy/douyu-extension.git
 无需构建步骤，源码即产物。测试使用 Node 内置测试运行器：
 
 ```bash
-npm test        # node --test，250 个用例
+npm test        # node --test，293 个用例
 ```
 
 测试在进程内组装真实的房间库、编排与规则模块，只把存储、平台 API、弹幕客户端、通知、alarm、标签页替换成内存实现，覆盖五条通知链路、今日统计取数、B 站通道降级、单写者并发与 service worker 入口装配。

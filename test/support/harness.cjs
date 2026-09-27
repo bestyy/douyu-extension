@@ -199,7 +199,8 @@ function createHarness(seed = {}, options = {}) {
     },
     setBadge(count) { badge.push(count); }
   };
-  const alarms = [];
+  const alarms = [];                 // create 日志（断言用）
+  const alarmMap = new Map();        // 现存 alarm 的活状态：alarms.get 查它，与真实 chrome.alarms 同语义
   const clearedAlarms = [];
   const openedTabs = [];
 
@@ -215,25 +216,37 @@ function createHarness(seed = {}, options = {}) {
     }
     : danmakuSurge.SurgeMeter;
 
-  const orchestrator = createOrchestrator({
-    store,
-    keyValue,
-    apis,
-    todayStatsApi,
-    clients,
-    bridge,
-    notifier,
-    rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, ...todayStats, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
-    identity: RoomIdentity,
-    alarms: {
-      create: (name, info) => alarms.push({ name, info: clone(info) }),
-      clear: name => { clearedAlarms.push(name); } // 端口完整即可：结算/取数节拍本身不是被测行为（见 spec 的测试决策）
-    },
-    tabs: { create: props => openedTabs.push(clone(props)) }
-  });
+  // 每次调用都造一份全新的编排（内存态归零），但存储与 alarm 注册表是外部世界的、跨实例保留：
+  // restart() 据此模拟 MV3 的 SW 回收重启——alarms.get 查到的仍是重启前那份真值。
+  function buildOrchestrator() {
+    return createOrchestrator({
+      store,
+      keyValue,
+      apis,
+      todayStatsApi,
+      clients,
+      bridge,
+      notifier,
+      rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, ...todayStats, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+      identity: RoomIdentity,
+      alarms: {
+        create: (name, info) => {
+          alarms.push({ name, info: clone(info) });
+          // 活状态按真实 chrome.alarms.Alarm 的形状存：periodInMinutes 在顶层（get 的消费方读它）
+          alarmMap.set(name, { name, ...clone(info) });
+        },
+        clear: name => {
+          clearedAlarms.push(name);
+          alarmMap.delete(name);
+        },
+        get: async name => alarmMap.get(name)
+      },
+      tabs: { create: props => openedTabs.push(clone(props)) }
+    });
+  }
 
-  return {
-    orchestrator,
+  const harness = {
+    orchestrator: buildOrchestrator(),
     store,
     bridge,
     clients,
@@ -250,6 +263,11 @@ function createHarness(seed = {}, options = {}) {
     apiCalls,
     highlightCalls,
     todayStatsCalls,
+    /**
+     * 模拟 SW 被回收后重启：换一个全新的编排实例（内存态归零、alarms.get 的假查仍指向同一份真值），
+     * 存储、客户端、通知与 alarm 注册表都原样保留。用来钉住「重启不会重置已在跑的周期 alarm」。
+     */
+    restart() { harness.orchestrator = buildOrchestrator(); },
     /** 让某平台的下一轮轮询返回这些数据 */
     setApiResult(platform, result) { apiResults[platform] = result; },
     /** 让某平台的下一轮看点取数返回这些数据 */
@@ -257,6 +275,7 @@ function createHarness(seed = {}, options = {}) {
     /** 让下一轮今日统计取数返回这个结果（成功形状 / 失败形状 / (roomId)=>结果） */
     setTodayStatsResult(result) { todayStatsResult.value = result; }
   };
+  return harness;
 }
 
 /** 轮询一次（走编排的 alarm 入口，与生产同一条路） */

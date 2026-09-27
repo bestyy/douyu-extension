@@ -8,13 +8,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createHarness, poll, douyuResult, bilibiliResult } = require('./support/harness.cjs');
+const { createHarness, poll, boot, douyuResult, bilibiliResult } = require('./support/harness.cjs');
 
 const room = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
 const streamer = (roomId, platform, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, online: false, ...extra });
 
-test('斗鱼：下播→开播发一条通知，持续在线不重复，下播后再开播算新场次再发', async () => {
-  const harness = createHarness({
+test('斗鱼：下播→开播发一条通知，持续在线不重复，下播后再开播算新场次再发', async () => {  const harness = createHarness({
     rooms: [room('100', 'douyu', { notify: true })],
     streamers: [streamer('100', 'douyu')]
   }, { apiResults: { douyu: douyuResult([{ roomId: '100', online: true, title: '在播', category: '游戏', nickname: '昵称100' }]) } });
@@ -152,4 +151,31 @@ test('房间列表为空：不发请求、不稳动 lastRefresh', async () => {
   await poll(harness);
   assert.deepEqual(harness.apiCalls, []);
   assert.equal('lastRefresh' in harness.data, false);
+});
+
+test('基础 alarm 收敛：SW 重启不重建已在跑的计时，只有 refreshInterval 变更才重置', async () => {
+  const harness = createHarness({ rooms: [], streamers: [] });
+  const base = name => harness.alarms.filter(a => a.name === name);
+
+  await boot(harness);
+  assert.equal(base('refreshRooms').length, 1, '启动建一次');
+  assert.equal(base('refreshRooms')[0].info.periodInMinutes, 1, '默认 60 秒 → 1 分钟');
+  assert.equal(base('sampleViewerCounts').length, 1);
+
+  // SW 被反复回收重启：基础 alarm 活在实例之外，不该被重建（create 会重置计时）
+  for (let i = 0; i < 5; i++) {
+    harness.restart();
+    await boot(harness);
+  }
+  assert.equal(base('refreshRooms').length, 1, '重启五次仍只建过一次');
+  assert.equal(base('sampleViewerCounts').length, 1);
+
+  // refreshInterval 改到 120 秒：周期从 1 → 2 分钟，这时才该重建（重置计时是期望行为）
+  await harness.orchestrator.onMessage({ type: 'PATCH_SETTINGS', patch: { refreshInterval: 120 } });
+  assert.equal(base('refreshRooms').length, 2, '周期变了就重建');
+  assert.equal(base('refreshRooms')[1].info.periodInMinutes, 2);
+
+  // 周期没再变：重复收敛不再重建
+  await harness.orchestrator.onMessage({ type: 'PATCH_SETTINGS', patch: { notificationsEnabled: false } });
+  assert.equal(base('refreshRooms').length, 2, '周期未变不重建');
 });

@@ -452,3 +452,26 @@ test('B站未登录：只开激增的房间走 SW 直连盯守', async () => {
   assert.deepEqual(harness.clients.bilibiliWatch.roomCalls.at(-1), ['200']);
   assert.deepEqual(harness.tabApi.calls.sendMessage, [], '未登录不开桥接页');
 });
+
+test('SW 重启后不重建已在跑的结算 alarm：1 分钟节拍不被每分钟的开播轮询重置', async () => {
+  const clock = createClock(0);
+  const harness = createHarness({
+    rooms: [room('100', 'douyu', { surgeAlert: true })],
+    streamers: [streamer('100', 'douyu')]
+  }, { clock });
+  const surgeAlarms = () => harness.alarms.filter(a => a.name === 'danmakuSurgeTick');
+
+  await poll(harness);
+  assert.equal(surgeAlarms().length, 1, '有激增盯守房间就建一次');
+  const first = surgeAlarms()[0];
+
+  // 开播轮询周期与结算周期都是 1 分钟：SW 每次被唤醒都重建内存态，若靠内存布尔量判断就会每次 create，
+  // create 即重置计时——结算会被无限往后推，桶永远跨不过去。
+  for (let i = 0; i < 10; i++) {
+    harness.restart();
+    await boot(harness);
+  }
+
+  assert.equal(surgeAlarms().length, 1, '重启十次也不重建');
+  assert.deepEqual(surgeAlarms()[0], first, '仍是首轮那一个（周期未被重置）');
+});
