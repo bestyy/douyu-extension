@@ -923,6 +923,9 @@ input[type="number"]:focus,
 
 .list-actions .cell-btn { flex: 1; }
 
+/* 配置备份：导入用的文件选择框由按钮触发，输入框本身不显示（不是通用 .hidden，避免影响别处） */
+.file-input-hidden { display: none; }
+
 /* 动效偏好 */
 @media (prefers-reduced-motion: reduce) {
   .status-dot.online,

@@ -54,22 +54,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   const surgeMinBuckets = document.getElementById('surgeMinBuckets');
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
-  // 加载现有设置
-  refreshInterval.value = settings.refreshInterval;
-  notificationsEnabled.checked = settings.notificationsEnabled;
-  danmakuWatchEnabled.checked = isDanmakuWatchEnabled(settings);
-  viewerAlertEnabled.checked = isViewerAlertEnabled(settings);
-  surgeAlertEnabled.checked = isSurgeAlertEnabled(settings);
-  highlightAlertEnabled.checked = isHighlightAlertEnabled(settings);
-  todayStatsEnabled.checked = isTodayStatsEnabled(settings);
-  // 四个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
-  const surgeSettings = normalizeSurgeSettings(settings);
-  surgeMultiple.value = surgeSettings.multiple;
-  surgeMinBaseline.value = surgeSettings.minBaseline;
-  surgeCooldownMinutes.value = surgeSettings.cooldownMinutes;
-  surgeMinBuckets.value = surgeSettings.minBuckets;
-  fetchDouyuViewerCount.checked = settings.fetchDouyuViewerCount;
-  fetchBilibiliViewerCount.checked = settings.fetchBilibiliViewerCount;
+
+  /** 把设置快照回填到各控件（导入整体替换 settings 后复用同一套回填） */
+  function applySettingsToForm(s) {
+    refreshInterval.value = s.refreshInterval;
+    notificationsEnabled.checked = s.notificationsEnabled;
+    danmakuWatchEnabled.checked = isDanmakuWatchEnabled(s);
+    viewerAlertEnabled.checked = isViewerAlertEnabled(s);
+    surgeAlertEnabled.checked = isSurgeAlertEnabled(s);
+    highlightAlertEnabled.checked = isHighlightAlertEnabled(s);
+    todayStatsEnabled.checked = isTodayStatsEnabled(s);
+    // 四个激增数值用归一化后的生效值回填（与判定侧同一套钳制与缺省）
+    const surgeSettings = normalizeSurgeSettings(s);
+    surgeMultiple.value = surgeSettings.multiple;
+    surgeMinBaseline.value = surgeSettings.minBaseline;
+    surgeCooldownMinutes.value = surgeSettings.cooldownMinutes;
+    surgeMinBuckets.value = surgeSettings.minBuckets;
+    fetchDouyuViewerCount.checked = s.fetchDouyuViewerCount;
+    fetchBilibiliViewerCount.checked = s.fetchBilibiliViewerCount;
+  }
+  applySettingsToForm(settings);
 
   // Migration check - old cookie config detected
   if (legacy.cookie && legacy.cookie.value && snapshot.rooms.length === 0) {
@@ -363,6 +367,80 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderRoomList();
       showStatus(addStatus, '状态已刷新', 'success');
       setTimeout(() => addStatus.classList.add('hidden'), 2000);
+    });
+  });
+
+  // === 配置备份（导出 / 导入，见 ADR-0012）===
+  const exportConfigBtn = document.getElementById('exportConfigBtn');
+  const importConfigBtn = document.getElementById('importConfigBtn');
+  const importConfigFile = document.getElementById('importConfigFile');
+  const backupStatus = document.getElementById('backupStatus');
+  const CONFIG_FORMAT_LABEL = '直播通知配置';
+
+  /** 导出：读房间库只读快照（纯读、不经 SW、不写 storage），构造导出对象并下载成 JSON 文件 */
+  exportConfigBtn.addEventListener('click', async () => {
+    const snapshot = await roomStore.snapshot();
+    const payload = ConfigBackup.buildExport(snapshot);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${CONFIG_FORMAT_LABEL}-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showStatus(backupStatus, `已导出 ${payload.rooms.length} 个房间、${payload.categories.length} 个分类`, 'success');
+  });
+
+  // 导入：按钮触发文件选择框（选同一份文件两次也要能再次触发，故选中后清空 value）
+  importConfigBtn.addEventListener('click', () => {
+    importConfigFile.value = '';
+    importConfigFile.click();
+  });
+
+  importConfigFile.addEventListener('change', async () => {
+    const file = importConfigFile.files && importConfigFile.files[0];
+    if (!file) {
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch (e) {
+      showStatus(backupStatus, '读取文件失败', 'error');
+      return;
+    }
+
+    const parsed = ConfigBackup.parseBackup(text, { identity: RoomIdentity, categoryRules: RoomCategories });
+    if (!parsed.ok) {
+      showStatus(backupStatus, `导入失败：${parsed.message}`, 'error');
+      return;
+    }
+
+    const current = await roomStore.snapshot();
+    const confirmText = `将导入 ${parsed.config.rooms.length} 个房间、${parsed.config.categories.length} 个分类，`
+      + `并覆盖本机当前的 ${current.rooms.length} 个房间与 ${current.categories.length} 个分类。\n`
+      + '本机原有配置将被替换且不可撤销，确定继续吗？';
+    if (!window.confirm(confirmText)) {
+      showStatus(backupStatus, '已取消导入', 'info');
+      return;
+    }
+
+    importConfigBtn.disabled = true;
+    chrome.runtime.sendMessage({ type: 'IMPORT_CONFIG', config: parsed.config }, async (response) => {
+      importConfigBtn.disabled = false;
+      if (!response || !response.ok) {
+        showStatus(backupStatus, '导入失败', 'error');
+        return;
+      }
+      await renderRoomList();
+      // 设置页各控件按新设置回填（导入会整体替换 settings），并同步轮询间隔的内部基准
+      const next = await roomStore.snapshot();
+      applySettingsToForm(next.settings);
+      savedInterval = next.settings.refreshInterval;
+      showStatus(backupStatus, `已导入 ${response.rooms} 个房间、${response.categories} 个分类`, 'success');
     });
   });
 

@@ -685,6 +685,64 @@ test('init：旧格式（无 platform）的 rooms / streamers 迁移为 douyu', 
   assert.equal(storage.raw().settings.refreshInterval, 60, '已有 settings 不动');
 });
 
+// === 配置导入（配置备份，见 ADR-0012）===
+
+test('importConfig：三键整体替换，streamers 按新房间列表对齐（保留 / 丢弃 / 补占位）', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '100'), room('douyu', '999')],
+    streamers: [streamer('douyu', '100', { online: true, title: '在播' }), streamer('douyu', '999', { online: false })],
+    categories: [{ id: 'c1', name: '旧分类' }],
+    settings: { refreshInterval: 60 }
+  });
+
+  const config = {
+    rooms: [
+      { platform: 'douyu', roomId: '100', nickname: '保留', notify: true },
+      { platform: 'bilibili', roomId: '200', nickname: '新增', notify: false }
+    ],
+    categories: [{ id: 'c1', name: '游戏' }, { id: 'c2', name: '音乐' }],
+    settings: { refreshInterval: 120, surgeMultiple: 4.5 }
+  };
+  const result = await store.importConfig(config);
+  assert.equal(result.ok, true);
+
+  const raw = storage.raw();
+  assert.deepEqual(raw.rooms, config.rooms, 'rooms 整体替换');
+  assert.deepEqual(raw.categories, config.categories, 'categories 整体替换');
+  assert.equal(raw.settings.refreshInterval, 120, 'settings 整体替换');
+  assert.deepEqual(raw.streamers, [
+    { roomId: '100', platform: 'douyu', nickname: '昵称100', online: true, title: '在播' },
+    { roomId: '200', platform: 'bilibili', online: false }
+  ], '仍存在的保留快照、消失的丢弃、新增的补空占位');
+});
+
+test('importConfig：一次写入完成（不清空再写），且快照的 settings 解算平台开关', async () => {
+  const { store, storage } = createStore({ rooms: [room('douyu', '100')], streamers: [streamer('douyu', '100')] });
+  await store.importConfig({
+    rooms: [{ platform: 'douyu', roomId: '100', nickname: '甲', notify: false }],
+    categories: [],
+    settings: { refreshInterval: 60, fetchDouyuViewerCount: false }
+  });
+  assert.deepEqual(storage.writes, [['rooms', 'categories', 'settings', 'streamers']], '四键一次写入');
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.settings.fetchDouyuViewerCount, false);
+  assert.equal(snapshot.settings.fetchBilibiliViewerCount, true, '缺键由读侧默认值补全');
+});
+
+test('importConfig：导入空配置把四键清空（房间、分类、streamers 都不留残余）', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '100')],
+    streamers: [streamer('douyu', '100', { online: true })],
+    categories: [{ id: 'c1', name: '旧' }],
+    settings: { refreshInterval: 60 }
+  });
+  await store.importConfig({ rooms: [], categories: [], settings: { refreshInterval: 60 } });
+  const raw = storage.raw();
+  assert.deepEqual(raw.rooms, []);
+  assert.deepEqual(raw.streamers, []);
+  assert.deepEqual(raw.categories, []);
+});
+
 // === 串行队列：读改写不交错（本 module 存在的理由）===
 
 test('串行队列：并发两次值到达，前值链正确（都在自己的临界区里读到最新值）', async () => {
