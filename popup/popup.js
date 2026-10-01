@@ -64,8 +64,8 @@ async function loadData() {
   try {
     const [snapshot, extra] = await Promise.all([
       roomStore.snapshot(),
-      // 盯守排队视图、今日统计、弹窗分类栏的选中项（都归编排）与旧版 Cookie 提示都不在房间库的键内
-      chrome.storage.local.get(['watchQueued', 'cookie', 'todayStats', 'popupCategoryId'])
+      // 盯守排队视图、弹窗分类栏的选中项（都归编排）与旧版 Cookie 提示都不在房间库的键内
+      chrome.storage.local.get(['watchQueued', 'cookie', 'popupCategoryId'])
     ]);
     const data = { ...snapshot, ...extra };
     document.getElementById('loading').classList.add('hidden');
@@ -118,7 +118,7 @@ async function loadData() {
       ? RoomCategories.ALL_ID
       : String(data.popupCategoryId);
     railSelection = RoomCategories.resolveRailSelection(railRemembered, items);
-    railView = { items, settings, todayStats: data.todayStats };
+    railView = { items };
     renderRailAndList();
     document.getElementById('listArea').classList.remove('hidden');
 
@@ -157,7 +157,7 @@ function renderWatchQueue(queued) {
  */
 function renderRailAndList() {
   if (!railView) return;
-  const { items, settings, todayStats } = railView;
+  const { items } = railView;
 
   renderCategoryRail(items, railSelection);
 
@@ -167,10 +167,10 @@ function renderRailAndList() {
   const segments = all ? items.filter(item => item.id !== RoomCategories.ALL_ID) : items.filter(item => item.id === railSelection);
   segments.forEach(segment => {
     if (all) {
-      container.appendChild(renderCategorySection(segment, { settings, todayStats }));
+      container.appendChild(renderCategorySection(segment));
       return;
     }
-    segment.rooms.forEach(s => container.appendChild(renderStreamerCard(s, { settings, todayStats })));
+    segment.rooms.forEach(s => container.appendChild(renderStreamerCard(s)));
   });
 }
 
@@ -220,7 +220,7 @@ function selectCategory(categoryId, { restoreFocus = false } = {}) {
 }
 
 /** 一个分类段：标题（分类名 + 在播数）+ 该段卡片。标题只是标题，切换分类的唯一入口是左栏 */
-function renderCategorySection(group, { settings = {}, todayStats = {} } = {}) {
+function renderCategorySection(group) {
   const section = document.createElement('div');
   section.className = 'category-section';
 
@@ -236,12 +236,12 @@ function renderCategorySection(group, { settings = {}, todayStats = {} } = {}) {
   head.appendChild(count);
   section.appendChild(head);
 
-  group.rooms.forEach(s => section.appendChild(renderStreamerCard(s, { settings, todayStats })));
+  group.rooms.forEach(s => section.appendChild(renderStreamerCard(s)));
   return section;
 }
 
 /** 单张主播卡片（分组之外的一切既有内容不变） */
-function renderStreamerCard(s, { settings = {}, todayStats = {} } = {}) {
+function renderStreamerCard(s) {
   const card = document.createElement('div');
   card.className = 'streamer-card';
   card.addEventListener('click', async () => {
@@ -328,7 +328,6 @@ function renderStreamerCard(s, { settings = {}, todayStats = {} } = {}) {
         <span class="live-dot"></span>
         ${escapeHtml(s.category)}${statText}
       </div>
-      ${renderTodayStats(s, settings, todayStats)}
     `;
 
   card.appendChild(coverImg);
@@ -341,29 +340,6 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
-}
-
-/**
- * 今日统计行（该房「当天 0 点起累计」的弹幕数 / 弹幕人数、礼物金额 / 礼物人数，见 CONTEXT.md）
- * 要不要显示整条判定交给 lib/today-stats.js 的 shouldShowTodayStats（总开关 → 跨零点保鲜）：
- * 总开关关闭、当天还没取到数、或旧值跨过了本地零点，这一行整行不出现（不显示 0，也不留空行）。
- * 只有斗鱼房间有这个形态的数据，B站卡片上不出现（平台门在取数端，落盘里根本没有它的条目）。
- * 固定两行——首行弹幕、次行礼物，两块由「今日统计」标签的分割线与上面的此刻快照分开
- * （四项并进一行在 360px 弹窗里放不下，见 popup.css 的 .streamer-today）。
- */
-function renderTodayStats(streamer, settings, todayStats) {
-  const record = (todayStats || {})[RoomIdentity.roomKey(streamer)];
-  const today = statsDateKey(new Date());
-  if (!shouldShowTodayStats({ settings, record, today })) {
-    return '';
-  }
-  return `
-      <div class="streamer-today">
-        <div class="today-label">今日统计</div>
-        <div class="today-part">弹幕 <span class="stat-num">${formatNumber(record.chatPv)}</span> / ${formatNumber(record.chatUv)} 人</div>
-        <div class="today-part">礼物 <span class="stat-num">${formatNumber(record.giftAmount, 2)}</span> 元 / ${formatNumber(record.giftUv)} 人</div>
-      </div>
-  `;
 }
 
 /** 数字格式化：>= 1 万显示 x.x万（decimals 可指定小数位：金额用 2 位以示精度），否则原样 */

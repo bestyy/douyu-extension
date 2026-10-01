@@ -66,6 +66,11 @@ test('snapshot：缺键补默认值，平台观众数开关解算为布尔，旧
   assert.ok(!('fetchViewerCount' in snap.settings), '旧总开关不应出现在快照里');
 });
 
+test('snapshot：已退役的设置项（今日统计）读侧一律抹掉，不出现快照里', async () => {
+  const snap = await createStore({ settings: { todayStatsEnabled: true } }).store.snapshot();
+  assert.ok(!('todayStatsEnabled' in snap.settings), '退役开关不进快照，也就不会进导出');
+});
+
 test('snapshot：快照带上分类列表且深冻结（老安装缺 categories 键时回退空数组）', async () => {
   const legacy = await createStore({ rooms: [], streamers: [], settings: {} }).store.snapshot();
   assert.deepEqual(legacy.categories, [], '老安装缺键走读侧回退，不重写用户数据');

@@ -55,11 +55,11 @@ test('buildExport：剥掉快照附加的 online，房间只留持久化字段',
   assert.equal(out.rooms[0].notify, true);
 });
 
-test('buildExport：settings 只带房间库已知的键（未知键与旧总开关都不入文件）', () => {
+test('buildExport：settings 只带房间库已知的键（未知键、旧总开关与退役项都不入文件）', () => {
   const snapshot = {
     rooms: [],
     categories: [],
-    settings: { refreshInterval: 60, fetchDouyuViewerCount: true, fetchViewerCount: true, bogus: 1 }
+    settings: { refreshInterval: 60, fetchDouyuViewerCount: true, fetchViewerCount: true, todayStatsEnabled: true, bogus: 1 }
   };
   const out = ConfigBackup.buildExport(snapshot);
   assert.deepEqual(Object.keys(out.settings).sort(), ['fetchDouyuViewerCount', 'refreshInterval']);
@@ -94,6 +94,17 @@ test('parseBackup：缺键合法（settings 只有部分键 / 房间省略可选
   assert.deepEqual(result.config.settings, { refreshInterval: 90 });
   assert.deepEqual(result.config.rooms, [{ platform: 'douyu', roomId: '12345' }]);
   assert.deepEqual(result.config.categories, []);
+});
+
+test('parseBackup：接受下线之前导出的文件（退役的 todayStatsEnabled 放行，但不落进配置）', () => {
+  const result = parse(text({
+    format: 'douyu-extensions-config',
+    version: 1,
+    settings: { refreshInterval: 90, todayStatsEnabled: true },
+    rooms: []
+  }));
+  assert.equal(result.ok, true, '旧备份不能因为多了退役字段就被整份拒绝');
+  assert.deepEqual(result.config.settings, { refreshInterval: 90 });
 });
 
 test('parseBackup：房间号两端的空白被 trim 后落盘为纯数字', () => {

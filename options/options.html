@@ -161,16 +161,8 @@
         </span>
         <input type="checkbox" id="fetchBilibiliViewerCount" checked>
       </label>
-      <div class="cell-divider"></div>
-      <label class="toggle-row">
-        <span class="row-text">
-          <span class="row-title">今日统计</span>
-          <span class="row-desc">在线列表显示斗鱼房间当天累计的弹幕 / 礼物数据；数据来自第三方数据站 doseeing（不是斗鱼官方），关闭后不再请求该站</span>
-        </span>
-        <input type="checkbox" id="todayStatsEnabled" checked>
-      </label>
     </section>
-    <p class="group-hint">两项观众数开关独立控制对应平台的采样（每 10 分钟一次）；关闭后拿不到数值，对应平台的观众数提醒不会触发。今日统计是把「你在监控哪些斗鱼房间」以匿名请求发给第三方数据站 doseeing（每 5 分钟一次），只读展示、不产生任何通知；关闭后扩展完全不请求该站，已取到的数字保留在本地，重新打开最多等一个周期就能看到</p>
+    <p class="group-hint">两项观众数开关独立控制对应平台的采样（每 10 分钟一次）；关闭后拿不到数值，对应平台的观众数提醒不会触发</p>
 
     <h2 class="group-title">配置备份</h2>
     <section class="card">
@@ -181,7 +173,7 @@
       <input type="file" id="importConfigFile" accept="application/json,.json" class="file-input-hidden">
       <div id="backupStatus" class="status hidden"></div>
     </section>
-    <p class="group-hint">导出把当前的房间、分类与全部设置写成一个 JSON 文件下载下来，换一台电脑时用「导入配置」选中它即可整体替换本机配置（导入前会先让你确认，替换后本机原有的房间与分类将被覆盖、不可撤销）。实时数据（谁在播、观众数、今日统计）不随文件搬过去，由新电脑自己重新获取；导入后扩展会立刻按新配置刷新一轮</p>
+    <p class="group-hint">导出把当前的房间、分类与全部设置写成一个 JSON 文件下载下来，换一台电脑时用「导入配置」选中它即可整体替换本机配置（导入前会先让你确认，替换后本机原有的房间与分类将被覆盖、不可撤销）。实时数据（谁在播、观众数）不随文件搬过去，由新电脑自己重新获取；导入后扩展会立刻按新配置刷新一轮</p>
   </div>
 
   <script src="../lib/room-identity.js"></script>
@@ -189,7 +181,6 @@
   <script src="../lib/viewer-alert.js"></script>
   <script src="../lib/danmaku-surge.js"></script>
   <script src="../lib/highlight-alert.js"></script>
-  <script src="../lib/today-stats.js"></script>
   <script src="../lib/room-categories.js"></script>
   <script src="../lib/config-backup.js"></script>
   <script src="../lib/room-store.js"></script>

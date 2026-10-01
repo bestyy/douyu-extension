@@ -1,5 +1,7 @@
 # 「今日统计」轮询第三方数据站 doseeing，按斗鱼房间每 5 分钟取当日累计、只读展示不通知
 
+> **本 ADR 已被 [ADR-0013](0013-retire-today-stats.md) 取代（2026-10-01）**：数据源 doseeing（在看直播）已于 2026-09-30 全线停止服务，且经核查没有可替代的匿名免费接口，「今日统计」已整体下线、`host_permissions` 已撤掉该域名。以下正文是当初的决策记录，保留供将来若以本地自算重启同类功能时参照；其中描述的形状与开关均已不存在。
+
 弹窗的在线列表要显示每个在线房间**当天 0 点起累计**的四个数字：弹幕数 / 弹幕人数、礼物金额 / 礼物人数（见 CONTEXT.md「今日统计」）。斗鱼官方的公开接口只给房间快照与当前指标，不给区间聚合成品；能直接给出这四个数的是第三方数据站 `doseeing.com`（在看直播排行榜）的 `GET /api/room_stat?room=<rid>&hours=today`——实测匿名可访问，无签名、无 token，`hours` 是白名单枚举（`1` / `today` / `yesterday` / `7day` / `thismonth`）。因此本项目**第一次引入非斗鱼 / 非 B站的第三方接口依赖**，这是这条 ADR 要记录的核心取舍。
 
 取数落在新增的 vendor 模块 `lib/doseeing-api.js`（`fetchTodayStats(roomId)`，自带超时与错误模型，字段收敛在此：`room` 为 `null` 视为 `room_not_found` 失败，`gift.paid.price` 单位是**分**、在此换成元并保留两位小数），装配根新增一个独立的 `todayStatsApi` port 注入编排——不与 `lib/douyu-api.js` 合并，因为仓库的惯例是一个模块对一个接口提供方，混进去会让「这个数从哪来」在代码里消失。判定归新增的纯规则模块 `lib/today-stats.js`（照 `lib/highlight-alert.js` 的形状）：平台门 `STATS_PLATFORMS = ['douyu']`、总开关 `isTodayStatsEnabled`、取数目标 `selectTodayStatsTargets`、保鲜判定 `isStatsFresh`。取数是一条独立的 5 分钟 `chrome.alarms` 任务，承载它的 alarm 只在「总开关开启 且 至少一个斗鱼房间」时存在，照 `syncHighlightAlert` 的收敛法；结果写进编排自己持有的 `todayStats` 键（`{ [房间复合键]: { chatPv, chatUv, giftAmount, giftUv, date, fetchedAt } }`），弹窗只读，照它读 `watchQueued` 那样。全局总开关 `settings.todayStatsEnabled` 默认开启；关掉后不请求、不展示，已落盘的数字保留（与「关闭总开关后各房配置保留、重开即恢复」的既有口径一致）。

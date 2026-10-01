@@ -11,11 +11,9 @@ importScripts(
   'lib/viewer-alert.js',
   'lib/danmaku-surge.js',
   'lib/highlight-alert.js',
-  'lib/today-stats.js',
   'lib/room-categories.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
-  'lib/doseeing-api.js',
   'lib/douyu-barrage.js',
   'lib/bilibili-barrage.js',
   'lib/bili-bridge-channel.js',
@@ -35,12 +33,6 @@ const apis = {
     batchFetchRoomInfo: ids => BilibiliAPI.batchFetchRoomInfo(ids),
     resolveNickname: id => BilibiliAPI.resolveNickname(id)
   }
-};
-
-// === 今日统计取数 port（第三方数据站 doseeing）===
-// 一个模块对一个接口提供方，因此独立成 port，不与 apis.douyu 合并（见 ADR-0007）
-const todayStatsApi = {
-  fetchTodayStats: id => DoseeingAPI.fetchTodayStats(id)
 };
 
 // === 房间库（rooms / streamers / settings / categories 的形状与全部变更）===
@@ -113,7 +105,6 @@ const orchestrator = createOrchestrator({
   store: roomStore,
   keyValue: StorageHelper,
   apis,
-  todayStatsApi,
   clients,
   bridge: biliBridge,
   notifier,
@@ -129,11 +120,7 @@ const orchestrator = createOrchestrator({
     SurgeMeter,
     HIGHLIGHT_PLATFORMS,
     isHighlightAlertEnabled,
-    selectNewHighlights,
-    STATS_PLATFORMS,
-    isTodayStatsEnabled,
-    selectTodayStatsTargets,
-    statsDateKey
+    selectNewHighlights
   },
   identity: RoomIdentity,
   alarms: chrome.alarms,

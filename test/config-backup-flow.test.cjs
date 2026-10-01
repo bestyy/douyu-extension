@@ -2,7 +2,7 @@
 //
 // 运行：npm test（node --test）
 // 覆盖：导入把 rooms / categories / settings 整体替换并让 streamers 对齐；清空编排持有的运行时键
-// （今日统计 / 看点水位 / 盯守排队 / 弹窗记忆 / 首启标记 / 上次刷新 / 通道降级标记）；把新配置里的
+// （看点水位 / 盯守排队 / 弹窗记忆 / 首启标记 / 上次刷新 / 通道降级标记）；把新配置里的
 // 房间预记入 notifiedRooms；触发一轮完整收敛（基础 alarm 按新设置重建、立即轮询）；以及紧接着的
 // 轮询不把正在直播的新房间当成新开播。文件本身的解析与拒绝口径在 test/config-backup.test.cjs；
 // 房间库写入形状在 test/room-store.test.cjs 的 importConfig 用例。口径见 docs/adr/0012。
@@ -28,7 +28,6 @@ test('导入：三键整体替换、streamers 对齐、运行时键清空、noti
     categories: [{ id: 'c1', name: '旧分类' }],
     settings: { refreshInterval: 60 },
     // 编排持有的运行时键（导入后应被清掉）
-    todayStats: { douyu_100: { chatPv: 999 } },
     highlightWatermarks: { douyu_100: 5 },
     watchQueued: [{ roomId: '100', platform: 'douyu', nickname: '旧' }],
     popupCategoryId: 'c1',
@@ -51,7 +50,6 @@ test('导入：三键整体替换、streamers 对齐、运行时键清空、noti
     'streamers 按新房间列表对齐（旧房间的快照不留）');
   assert.equal(harness.data.streamers.every(s => s.online === false), true, '新增房间补空占位');
 
-  assert.equal(harness.data.todayStats ?? null, null, '今日统计清空');
   assert.equal(harness.data.highlightWatermarks ?? null, null, '看点水位清空');
   assert.equal(harness.data.watchQueued ?? null, null, '盯守排队清空');
   assert.equal(harness.data.popupCategoryId ?? null, null, '弹窗记忆清空');

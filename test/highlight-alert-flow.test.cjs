@@ -190,7 +190,7 @@ test('SW 重启后不重建已在跑的取数 alarm：5 分钟节拍不被每分
   assert.equal(highlightAlarms().length, 1, '首轮建一次');
   const first = highlightAlarms()[0];
 
-  // 同日今日统计：SW 被开播轮询反复回收重启，靠内存布尔量会再 create 一次（create 即重置计时）
+  // 同日看点取数：SW 被开播轮询反复回收重启，靠内存布尔量会再 create 一次（create 即重置计时）
   for (let i = 0; i < 10; i++) {
     harness.restart();
     await boot(harness);

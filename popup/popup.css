@@ -280,8 +280,8 @@ header h1::before {
 
 /* ===== 列表区：左栏分类选择器 + 右侧在线列表 =====
    两栏各自独立滚动（460px 内会同时存在两条滚动条）。左栏常驻 ~100px：460 − 100 与原弹窗的
-   360px 相互抵消，因此右侧卡片可用宽度与加宽前逐字相同——卡片的头像、信息区、观众数行、
-   今日统计的两行布局与平台标签一律不动（见 ADR-0009）。 */
+   360px 相互抵消，因此右侧卡片可用宽度与加宽前逐字相同——卡片的头像、信息区、观众数行
+   与平台标签一律不动（见 ADR-0009）。 */
 #listArea {
   flex: 1;
   display: flex;
@@ -492,34 +492,6 @@ header h1::before {
   font-size: 11px;
   color: var(--label-3);
   margin-top: 5px;
-}
-
-/* 今日统计块 — 该房当天 0 点起累计的弹幕数 / 弹幕人数、礼物金额 / 礼物人数。
-   四项并进一行放不下（右侧列表可用宽度仍等于加宽前的 360px − 两侧内边距，实测整行约 305px、
-   可用只有 265px，末尾的礼物人数被省略号吃掉），故固定两行：首行弹幕、次行礼物。整块装进一个
-   浅色内嵌面板与上面的「分区 · 观众数」分开——面板的四边天生与左邻文字对齐、也不会像分割线那样
-   横着伸出去，视觉重量比线轻；这一块不显示时（无数据 / 总开关关）面板也不会出现 */
-.streamer-today {
-  margin-top: 7px;
-  padding: 5px 8px 6px;
-  border-radius: 10px;
-  background: var(--fill);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--label-3);
-}
-
-/* 面板首行的小标题：比正文小一号、字距略开，不与「弹幕 / 礼物」两行抢注意力 */
-.today-label {
-  font-size: 10px;
-  letter-spacing: 0.06em;
-}
-
-/* 一行一组（弹幕 / 礼物）：组内不折，数字与单位不被拆开 */
-.streamer-today .today-part {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* 观众数 — 等宽读数 */
