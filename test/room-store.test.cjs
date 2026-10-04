@@ -446,19 +446,26 @@ test('addRoom：非纯数字拒绝，重复拒绝，不写盘', async () => {
   assert.equal(storage.writes.length, 0);
 });
 
-test('addRoom：所选平台解析失败自动换另一平台兜底，兜底后同样查重', async () => {
-  const resolveNickname = async (platform) => platform === 'bilibili'
-    ? { ok: true, nickname: 'B站主播' }
-    : { ok: false };
+test('addRoom：所选平台解析失败只报错，绝不改挂到另一平台（数字号跨平台会撞号）', async () => {
+  const calls = [];
+  const resolveNickname = async (platform) => {
+    calls.push(platform);
+    // 斗鱼解析失败，但同一号码在 B站是另一间房：绝不能因此把房间加进 B站
+    return platform === 'bilibili' ? { ok: true, nickname: 'B站主播' } : { ok: false };
+  };
   const { store, storage } = createStore({ rooms: [] }, { resolveNickname });
-  const added = await store.addRoom({ roomId: '100', platform: 'douyu' });
-  assert.equal(added.ok, true);
-  assert.equal(added.room.platform, 'bilibili');
-  assert.equal(storage.raw().rooms[0].notify, false);
 
-  const dup = await store.addRoom({ roomId: '100', platform: 'douyu' });
-  assert.equal(dup.ok, false, '兜底到 bilibili 后撞上已有房间');
+  const failed = await store.addRoom({ roomId: '91224', platform: 'douyu' });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error, '房间号不存在或无法访问');
+  assert.deepEqual(calls, ['douyu'], '只查所选平台，不拿同一号码去另一平台兜底');
+  assert.equal(storage.writes.length, 0, '解析失败不写盘');
+
+  // 同一号码在所选平台上解析成功时照常加入
+  const added = await store.addRoom({ roomId: '91224', platform: 'bilibili' });
+  assert.equal(added.ok, true);
   assert.equal(storage.raw().rooms.length, 1);
+  assert.equal(storage.raw().rooms[0].platform, 'bilibili');
 });
 
 test('removeRoom：rooms 与主播快照在同一次写入里删净，重复移除幂等', async () => {
