@@ -3,7 +3,7 @@
 // 运行：npm test（node --test）
 // 覆盖：宽限期边界（内 → 照发、恰好等于 → 照发、超过 → 丢弃、at 恰等于 now → 照发）、
 // 多条同时到期各自独立裁决、未来订阅不进任一分支且被算作下一个待触发时刻、空列表无待触发时刻、
-// 通知文案在「在播」与「未播」两种状态下的标题与正文。
+// 展示名回退。订阅通知的文案构造已迁入 lib/notifications.js，其用例见 test/notifications.test.cjs。
 'use strict';
 
 const { test } = require('node:test');
@@ -12,8 +12,7 @@ const assert = require('node:assert/strict');
 const {
   SUBSCRIPTION_GRACE_MS,
   decideSubscriptions,
-  subscriptionDisplayName,
-  buildSubscriptionNotification
+  subscriptionDisplayName
 } = require('../lib/subscription-alert.js');
 
 /** 一条订阅（存储里的形状） */
@@ -113,45 +112,4 @@ test('subscriptionDisplayName：有昵称用昵称，没有则回退「平台 �
     '斗鱼 100',
     '房间已被移除：回退为「平台 房间号」'
   );
-});
-
-// === 通知文案 ===
-
-test('通知文案：在播时正文附当前标题', () => {
-  const { title, message } = buildSubscriptionNotification({
-    subscription: sub('s1', NOW),
-    streamer: { online: true, title: '今天的直播', nickname: '主播甲' },
-    platformLabel: '斗鱼'
-  });
-  assert.equal(title, '[斗鱼] 主播甲 订阅到点了！');
-  assert.equal(message, '正在直播：今天的直播');
-});
-
-test('通知文案：在播但没有标题时回退「正在直播」', () => {
-  const { message } = buildSubscriptionNotification({
-    subscription: sub('s1', NOW),
-    streamer: { online: true, nickname: '主播甲' },
-    platformLabel: '斗鱼'
-  });
-  assert.equal(message, '正在直播：正在直播');
-});
-
-test('通知文案：未播时正文写明未开播', () => {
-  const { title, message } = buildSubscriptionNotification({
-    subscription: sub('s1', NOW),
-    streamer: { online: false, nickname: '主播甲' },
-    platformLabel: '斗鱼'
-  });
-  assert.equal(title, '[斗鱼] 主播甲 订阅到点了！');
-  assert.equal(message, '当前未开播');
-});
-
-test('通知文案：房间已被移除（无快照）时标题回退「平台 房间号」，正文写未开播', () => {
-  const { title, message } = buildSubscriptionNotification({
-    subscription: sub('s1', NOW),
-    streamer: null,
-    platformLabel: '斗鱼'
-  });
-  assert.equal(title, '[斗鱼] 斗鱼 100 订阅到点了！');
-  assert.equal(message, '当前未开播');
 });

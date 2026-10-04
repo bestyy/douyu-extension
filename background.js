@@ -13,6 +13,7 @@ importScripts(
   'lib/danmaku-surge.js',
   'lib/highlight-alert.js',
   'lib/subscription-alert.js',
+  'lib/notifications.js',
   'lib/room-categories.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
@@ -113,6 +114,8 @@ const resolveDouyuInternalRoomId = async roomId => {
 };
 
 const clients = {};
+// 通知 module：六种通知的 ID 与文案（注入房间标识 module，零依赖，故排在编排之前即可）
+const notifications = createNotifications({ identity: RoomIdentity });
 const orchestrator = createOrchestrator({
   store: roomStore,
   keyValue: StorageHelper,
@@ -134,11 +137,10 @@ const orchestrator = createOrchestrator({
     isHighlightAlertEnabled,
     selectNewHighlights,
     SUBSCRIPTION_GRACE_MS,
-    decideSubscriptions,
-    subscriptionDisplayName,
-    buildSubscriptionNotification
+    decideSubscriptions
   },
   identity: RoomIdentity,
+  notifications,
   alarms: chrome.alarms,
   tabs: { create: props => chrome.tabs.create(props) }
 });

@@ -23,6 +23,7 @@ const LIB_FILES = [
   'danmaku-surge',
   'highlight-alert',
   'subscription-alert',
+  'notifications',
   'room-categories',
   'douyu-api',
   'bilibili-api',

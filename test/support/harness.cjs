@@ -10,6 +10,7 @@ const { BiliBridgeChannel } = require('../../lib/bili-bridge-channel.js');
 const { createOrchestrator } = require('../../lib/orchestrator.js');
 const { RoomIdentity } = require('../../lib/room-identity.js');
 const { RoomCategories } = require('../../lib/room-categories.js');
+const { createNotifications } = require('../../lib/notifications.js');
 const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
@@ -215,6 +216,7 @@ function createHarness(seed = {}, options = {}) {
       notifier,
       rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, ...subscriptionAlert, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
       identity: RoomIdentity,
+      notifications: createNotifications({ identity: RoomIdentity }),
       now: clock ? () => clock.now() : undefined,
       alarms: {
         create: (name, info) => {
