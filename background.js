@@ -6,6 +6,7 @@
 
 importScripts(
   'lib/room-identity.js',
+  'lib/html-entities.js',
   'lib/storage.js',
   'lib/danmaku-watch.js',
   'lib/viewer-alert.js',
