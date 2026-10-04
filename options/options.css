@@ -257,7 +257,8 @@ body {
 input[type="text"],
 input[type="number"],
 #roomPlatform,
-#addRoomCategory {
+#addRoomCategory,
+#subscriptionRoom {
   padding: 9px 12px;
   font-size: 14px;
   font-family: var(--sans);
@@ -274,7 +275,8 @@ input[type="text"]::placeholder { color: var(--label-3); }
 input[type="text"]:focus,
 input[type="number"]:focus,
 #roomPlatform:focus,
-#addRoomCategory:focus {
+#addRoomCategory:focus,
+#subscriptionRoom:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
@@ -284,9 +286,10 @@ input[type="number"]:focus,
   min-width: 120px;
 }
 
-/* 平台 / 分类下拉（同一套外观） */
+/* 平台 / 分类 / 订阅房间下拉（同一套外观） */
 #roomPlatform,
 #addRoomCategory,
+#subscriptionRoom,
 .room-category {
   appearance: none;
   -webkit-appearance: none;
@@ -925,6 +928,57 @@ input[type="number"]:focus,
 
 /* 配置备份：导入用的文件选择框由按钮触发，输入框本身不显示（不是通用 .hidden，避免影响别处） */
 .file-input-hidden { display: none; }
+
+/* ===== 订阅卡片 ===== */
+/* 房间下拉 / 时间输入与添加按钮同排；窄屏换行（沿用 .input-row 的 flex-wrap） */
+#subscriptionRoom { flex: 1; min-width: 140px; }
+#subscriptionAt { flex: 1 1 190px; min-width: 170px; }
+
+input[type="datetime-local"] {
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: var(--sans);
+  color: var(--label);
+  background: var(--fill);
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input[type="datetime-local"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.subscription-list { margin-top: 4px; }
+
+.subscription-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 2px;
+  border-bottom: 0.5px solid var(--sep);
+}
+
+.subscription-item:last-child { border-bottom: none; }
+
+.subscription-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--label);
+}
+
+.subscription-time {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+}
 
 /* 动效偏好 */
 @media (prefers-reduced-motion: reduce) {

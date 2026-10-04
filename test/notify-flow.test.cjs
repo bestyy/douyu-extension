@@ -100,13 +100,14 @@ test('首次运行：已在线房间只记入 notifiedRooms 不通知，并清�
   assert.equal(harness.data._firstRun, null);
 });
 
-test('通知点击进入直播间：开播通知与派生 ID 各自解析到同一房间', async () => {
+test('通知点击进入直播间：开播通知与派生 ID（含订阅的变长 _sub_ 后缀）各自解析到同一房间', async () => {
   const harness = createHarness({ rooms: [room('100', 'douyu')] });
-  for (const id of ['douyu_100', 'douyu_100_watch', 'douyu_100_viewer']) {
+  for (const id of ['douyu_100', 'douyu_100_watch', 'douyu_100_viewer', 'douyu_100_sub_s1']) {
     await harness.orchestrator.onNotificationClicked(id);
   }
   await harness.orchestrator.onNotificationClicked('bilibili_200_viewer');
   assert.deepEqual(harness.openedTabs.map(t => t.url), [
+    'https://www.douyu.com/100',
     'https://www.douyu.com/100',
     'https://www.douyu.com/100',
     'https://www.douyu.com/100',

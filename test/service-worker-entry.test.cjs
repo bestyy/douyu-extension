@@ -22,6 +22,7 @@ const LIB_FILES = [
   'viewer-alert',
   'danmaku-surge',
   'highlight-alert',
+  'subscription-alert',
   'room-categories',
   'douyu-api',
   'bilibili-api',
@@ -193,7 +194,7 @@ test('消息接线：编排应答，未知消息回 ok:false；设置变更按�
   assert.equal(stub.alarms.find(a => a.name === 'refreshRooms').info.periodInMinutes, 2);
 });
 
-test('alarm 接线：名字映射到轮询 / 采样 / 激增结算 / 看点取数，失败不抛出', async () => {
+test('alarm 接线：名字映射到轮询 / 采样 / 激增结算 / 看点取数 / 订阅，失败不抛出', async () => {
   const stub = createChromeStub();
   loadEntry(stub.chrome);
   const fire = name => Promise.all(stub.listeners.alarm.map(fn => fn({ name })));
@@ -201,7 +202,31 @@ test('alarm 接线：名字映射到轮询 / 采样 / 激增结算 / 看点取�
   await fire('sampleViewerCounts');
   await fire('danmakuSurgeTick');
   await fire('highlightPoll');
+  await fire('subscriptionReminder');
   await tick();
+});
+
+test('订阅接线：添加 / 删除消息经编排落到房间库并重排 alarm', async () => {
+  const stub = createChromeStub();
+  loadEntry(stub.chrome);
+  const send = message => new Promise(resolve => stub.listeners.message[0](message, {}, resolve));
+
+  // 预置一个已在监控列表里的房间（订阅只能指向它）
+  stub.data.rooms = [{ roomId: '100', platform: 'douyu', nickname: '昵称100' }];
+  await tick();
+
+  const at = Date.now() + 60_000;
+  const added = await send({ type: 'ADD_SUBSCRIPTION', platform: 'douyu', roomId: '100', at });
+  assert.equal(added.ok, true);
+  assert.equal(stub.data.subscriptions.length, 1);
+  assert.equal(stub.alarms.find(a => a.name === 'subscriptionReminder').info.when, at);
+
+  const past = await send({ type: 'ADD_SUBSCRIPTION', platform: 'douyu', roomId: '100', at: 0 });
+  assert.equal(past.ok, false, '过去的时刻被拒并回传原因');
+
+  const removed = await send({ type: 'REMOVE_SUBSCRIPTION', id: added.subscription.id });
+  assert.equal(removed.ok, true);
+  assert.deepEqual(stub.data.subscriptions, []);
 });
 
 test('通知点击接线：开播通知与派生 ID 都进直播间', async () => {
@@ -219,4 +244,9 @@ test('通知点击接线：开播通知与派生 ID 都进直播间', async () =
   stub.listeners.notifButton[0]('bilibili_200', 1); // 非「进入直播间」按钮不处理
   await tick();
   assert.equal(stub.openedTabs.length, 2);
+
+  // 订阅通知的变长 `_sub_<id>` 后缀：点击仍进直播间
+  stub.listeners.notifClick[0]('douyu_300_sub_s7');
+  await tick();
+  assert.deepEqual(stub.openedTabs[2], { url: 'https://www.douyu.com/300' });
 });

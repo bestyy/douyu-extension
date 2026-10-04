@@ -1,6 +1,6 @@
 // background.js — Service Worker 入口：装配（composition root）+ chrome 事件接线
 //
-// 编排在 lib/orchestrator.js（轮询 / 采样 / 盯守 / 通知），四个键的形状与全部变更在
+// 编排在 lib/orchestrator.js（轮询 / 采样 / 盯守 / 看点 / 订阅 / 通知），五个键的形状与全部变更在
 // lib/room-store.js（单写者，见 docs/adr/0003-room-store-single-writer.md）。
 // 本文件只做三件事：把 chrome 适配成注入依赖、注册事件、把事件与消息交给编排。
 
@@ -12,6 +12,7 @@ importScripts(
   'lib/viewer-alert.js',
   'lib/danmaku-surge.js',
   'lib/highlight-alert.js',
+  'lib/subscription-alert.js',
   'lib/room-categories.js',
   'lib/douyu-api.js',
   'lib/bilibili-api.js',
@@ -121,7 +122,11 @@ const orchestrator = createOrchestrator({
     SurgeMeter,
     HIGHLIGHT_PLATFORMS,
     isHighlightAlertEnabled,
-    selectNewHighlights
+    selectNewHighlights,
+    SUBSCRIPTION_GRACE_MS,
+    decideSubscriptions,
+    subscriptionDisplayName,
+    buildSubscriptionNotification
   },
   identity: RoomIdentity,
   alarms: chrome.alarms,

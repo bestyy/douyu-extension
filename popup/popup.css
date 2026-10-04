@@ -555,6 +555,30 @@ header h1::before {
   color: var(--bili);
 }
 
+/* ===== 下一条订阅（顶部只读行，见 ADR-0016） ===== */
+#nextSubscription {
+  padding: 8px 16px;
+  background: var(--fill);
+  border-top: 0.5px solid var(--sep);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--label-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#nextSubscription::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
 /* ===== 弹幕检测排队提示 ===== */
 #watchQueueHint {
   display: flex;

@@ -70,6 +70,9 @@ async function loadData() {
     const data = { ...snapshot, ...extra };
     document.getElementById('loading').classList.add('hidden');
 
+    // 顶部「下一条订阅」只读行：与房间列表无关，先于下面的空态判断渲染
+    renderNextSubscription(data);
+
     // 弹幕检测排队提示：并发上限已满时，超出的开播房间暂未被盯着
     renderWatchQueue(data.watchQueued);
 
@@ -125,8 +128,43 @@ async function loadData() {
   } catch (err) {
     updateMeter(0);
     document.getElementById('loading').classList.add('hidden');
+    document.getElementById('nextSubscription').classList.add('hidden');
     document.getElementById('errorState').classList.remove('hidden');
   }
+}
+
+/**
+ * 顶部「下一条订阅」只读行（见 ADR-0016）：存在订阅时显示最近要到点的那条，否则不显示。
+ * 显示名实时从主播 / 房间快照解析，解析不到（房间已被移除）回退「平台 房间号」。
+ * 纯展示——不写任何键、不写房间库，弹窗的只读纪律不变（见 ADR-0009）。
+ */
+function renderNextSubscription(data) {
+  const el = document.getElementById('nextSubscription');
+  const subscriptions = data.subscriptions || [];
+  if (subscriptions.length === 0) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  const next = subscriptions.reduce((earliest, subscription) =>
+    (subscription.at < earliest.at ? subscription : earliest));
+  const key = RoomIdentity.roomKey(next);
+  const source = (data.streamers || []).find(s => RoomIdentity.roomKey(s) === key)
+    || (data.rooms || []).find(r => RoomIdentity.roomKey(r) === key);
+  const displayName = subscriptionDisplayName({
+    subscription: next,
+    streamer: source,
+    platformLabel: RoomIdentity.platformLabel(next.platform)
+  });
+  el.textContent = `下一条：${displayName} ${formatSubscriptionTime(next.at)}`;
+  el.classList.remove('hidden');
+}
+
+/** 订阅时间的展示格式（本地时区，弹窗窄，省掉年份） */
+function formatSubscriptionTime(at) {
+  const date = new Date(at);
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 // 信号指示条：按在线人数点亮 1/3/6/10 档

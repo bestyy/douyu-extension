@@ -53,6 +53,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const surgeMinBuckets = document.getElementById('surgeMinBuckets');
   const fetchDouyuViewerCount = document.getElementById('fetchDouyuViewerCount');
   const fetchBilibiliViewerCount = document.getElementById('fetchBilibiliViewerCount');
+  const subscriptionRoom = document.getElementById('subscriptionRoom');
+  const subscriptionAt = document.getElementById('subscriptionAt');
+  const addSubscriptionBtn = document.getElementById('addSubscriptionBtn');
+  const subscriptionStatus = document.getElementById('subscriptionStatus');
+  const subscriptionList = document.getElementById('subscriptionList');
+  const emptySubscriptions = document.getElementById('emptySubscriptions');
 
   /** 把设置快照回填到各控件（导入整体替换 settings 后复用同一套回填） */
   function applySettingsToForm(s) {
@@ -108,6 +114,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     emptyRooms.classList.toggle('hidden', rooms.length > 0);
     if (visible.length === 0) {
       roomList.innerHTML = '';
+      await renderSubscriptions();
       return;
     }
 
@@ -125,6 +132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     wireRoomItems();
     initDragAndDrop();
+    await renderSubscriptions();
   }
 
   /** 一个分类段：标题行（分类名 + 在播数/总数 + 就地改名 / 删除）+ 该分类下的房间行 */
@@ -569,6 +577,132 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   fetchDouyuViewerCount.addEventListener('change', onViewerToggle);
   fetchBilibiliViewerCount.addEventListener('change', onViewerToggle);
+
+  // === 订阅（用户排定的一次性绝对时刻提醒，见 ADR-0016）===
+  // 列表只读（除删除外不能改时间）、添加＝选房间 + 选日期时间；变更经 SW 落到房间库，页面不直写 storage。
+  // 时刻在页面用本地时区解释一次后落盘为绝对时间戳；提交前拒绝过去的时刻（房间库还会再校验一次）。
+
+  /** 订阅到点时间的展示格式（本地时区） */
+  function formatSubscriptionTime(at) {
+    const date = new Date(at);
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  /** 房间下拉的选项：当前已在扩展里的房间（订阅只能从这里选，不支持手输未添加的房间号） */
+  function renderSubscriptionRoomOptions(rooms) {
+    const prev = subscriptionRoom.value;
+    if (rooms.length === 0) {
+      subscriptionRoom.innerHTML = '<option value="">（先在「房间号管理」添加房间）</option>';
+      subscriptionRoom.disabled = true;
+      addSubscriptionBtn.disabled = true;
+      return;
+    }
+    subscriptionRoom.disabled = false;
+    addSubscriptionBtn.disabled = false;
+    subscriptionRoom.innerHTML = rooms
+      .map(r => {
+        const value = RoomIdentity.roomKey(r);
+        return `<option value="${escapeAttr(value)}">${escapeHtml(RoomIdentity.platformLabel(r.platform))} · ${escapeHtml(r.nickname || '未知')}（${escapeHtml(r.roomId)}）</option>`;
+      })
+      .join('');
+    if (rooms.some(r => RoomIdentity.roomKey(r) === prev)) {
+      subscriptionRoom.value = prev; // 尽量保留用户当前的选择
+    }
+  }
+
+  /** 订阅列表（只读 + 每条一个删除按钮）：显示名实时从主播 / 房间快照解析，解析不到回退「平台 房间号」 */
+  async function renderSubscriptions() {
+    const { rooms = [], streamers = [], subscriptions = [] } = await roomStore.snapshot();
+    renderSubscriptionRoomOptions(rooms);
+
+    const roomByKey = new Map(rooms.map(room => [RoomIdentity.roomKey(room), room]));
+    const streamerByKey = new Map(streamers.map(s => [RoomIdentity.roomKey(s), s]));
+
+    emptySubscriptions.classList.toggle('hidden', subscriptions.length > 0);
+    if (subscriptions.length === 0) {
+      subscriptionList.innerHTML = '';
+      return;
+    }
+
+    subscriptionList.innerHTML = subscriptions
+      .slice()
+      .sort((a, b) => a.at - b.at)
+      .map(subscription => {
+        const key = RoomIdentity.roomKey(subscription);
+        const source = streamerByKey.get(key) || roomByKey.get(key);
+        const displayName = subscriptionDisplayName({
+          subscription,
+          streamer: source,
+          platformLabel: RoomIdentity.platformLabel(subscription.platform)
+        });
+        const platformTag = RoomIdentity.isPlatform(subscription.platform)
+          ? `<span class="platform-tag ${subscription.platform}">${RoomIdentity.platformLabel(subscription.platform)}</span>`
+          : '<span class="platform-tag">未知平台</span>';
+        return `
+          <div class="subscription-item" data-id="${escapeAttr(subscription.id)}">
+            ${platformTag}
+            <span class="subscription-name">${escapeHtml(displayName)}</span>
+            <span class="subscription-time">${formatSubscriptionTime(subscription.at)}</span>
+            <button class="btn-remove subscription-remove" data-id="${escapeAttr(subscription.id)}">✕</button>
+          </div>
+        `;
+      })
+      .join('');
+
+    subscriptionList.querySelectorAll('.subscription-remove').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await chrome.runtime.sendMessage({ type: 'REMOVE_SUBSCRIPTION', id: btn.dataset.id });
+        await renderSubscriptions();
+      });
+    });
+  }
+
+  /** 添加订阅：页面先做「已选房间 + 非空 + 未过去」的即时校验；房间库失败时回传明确 reason */
+  async function handleAddSubscription() {
+    const key = subscriptionRoom.value;
+    if (!key) {
+      showStatus(subscriptionStatus, '请先在「房间号管理」添加房间', 'error');
+      return;
+    }
+    const ref = RoomIdentity.roomRefFromKey(key);
+    if (!ref) {
+      showStatus(subscriptionStatus, '所选房间无效', 'error');
+      return;
+    }
+    if (!subscriptionAt.value) {
+      showStatus(subscriptionStatus, '请选择提醒的日期与时间', 'error');
+      return;
+    }
+    const at = new Date(subscriptionAt.value).getTime();
+    if (!Number.isFinite(at)) {
+      showStatus(subscriptionStatus, '提醒时刻无效', 'error');
+      return;
+    }
+    if (at <= Date.now()) {
+      showStatus(subscriptionStatus, '提醒时刻必须晚于当前时间', 'error');
+      return;
+    }
+
+    addSubscriptionBtn.disabled = true;
+    chrome.runtime.sendMessage({
+      type: 'ADD_SUBSCRIPTION',
+      platform: ref.platform,
+      roomId: ref.roomId,
+      at
+    }, async (response) => {
+      addSubscriptionBtn.disabled = false;
+      if (!response || !response.ok) {
+        showStatus(subscriptionStatus, (response && response.error) || '添加订阅失败', 'error');
+        return;
+      }
+      subscriptionAt.value = '';
+      showStatus(subscriptionStatus, `已排定：${formatSubscriptionTime(at)}`, 'success');
+      await renderSubscriptions();
+    });
+  }
+
+  addSubscriptionBtn.addEventListener('click', handleAddSubscription);
 
   // 初始渲染
   await renderRoomList();

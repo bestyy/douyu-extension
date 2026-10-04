@@ -46,7 +46,10 @@ function createMemoryStorage(initial = {}, { asyncTick = false } = {}) {
 function createStore(initial = {}, options = {}) {
   const storage = createMemoryStorage(initial, options);
   const resolveNickname = options.resolveNickname || (async () => ({ ok: false }));
-  return { store: new RoomStore({ storage, resolveNickname, identity: RoomIdentity, categoryRules: RoomCategories }), storage };
+  return {
+    store: new RoomStore({ storage, resolveNickname, identity: RoomIdentity, categoryRules: RoomCategories, now: options.now }),
+    storage
+  };
 }
 
 const room = (platform, roomId, extra = {}) => ({ roomId, platform, nickname: `昵称${roomId}`, ...extra });
@@ -753,6 +756,108 @@ test('importConfig：导入空配置把四键清空（房间、分类、streamer
   assert.deepEqual(raw.rooms, []);
   assert.deepEqual(raw.streamers, []);
   assert.deepEqual(raw.categories, []);
+});
+
+// === 订阅（第五个键，见 ADR-0016）===
+
+test('addSubscription：生成唯一 id、追加到列表，快照带出 subscriptions', async () => {
+  const { store, storage } = createStore(
+    { rooms: [room('douyu', '100'), room('bilibili', '200')], streamers: [] },
+    { now: () => 1000 }
+  );
+
+  const first = await store.addSubscription({ platform: 'douyu', roomId: '100', at: 5000 });
+  assert.equal(first.ok, true);
+  assert.deepEqual(first.subscription, { id: 's1', platform: 'douyu', roomId: '100', at: 5000 });
+  const second = await store.addSubscription({ platform: 'bilibili', roomId: '200', at: 6000 });
+  assert.equal(second.subscription.id, 's2', 'id 逐个递增、唯一');
+
+  assert.deepEqual(storage.raw().subscriptions, [
+    { id: 's1', platform: 'douyu', roomId: '100', at: 5000 },
+    { id: 's2', platform: 'bilibili', roomId: '200', at: 6000 }
+  ]);
+  const snap = await store.snapshot();
+  assert.deepEqual(snap.subscriptions, storage.raw().subscriptions, '快照带出订阅，供设置页与弹窗读');
+  assert.ok(Object.isFrozen(snap.subscriptions));
+});
+
+test('addSubscription：只接受未来时刻（等于或早于当前都拒绝，不写盘）', async () => {
+  const { store, storage } = createStore({ rooms: [room('douyu', '100')] }, { now: () => 1000 });
+
+  assert.equal((await store.addSubscription({ platform: 'douyu', roomId: '100', at: 1000 })).ok, false, '等于当前时刻拒绝');
+  assert.equal((await store.addSubscription({ platform: 'douyu', roomId: '100', at: 999 })).ok, false, '过去时刻拒绝');
+  assert.equal((await store.addSubscription({ platform: 'douyu', roomId: '100', at: NaN })).ok, false, '非数字拒绝');
+  assert.equal(storage.writes.length, 0, '三次非法输入都不写盘');
+});
+
+test('addSubscription：房间必须已在监控列表里，未知平台显式拒绝', async () => {
+  const { store, storage } = createStore({ rooms: [room('douyu', '100')] }, { now: () => 1000 });
+
+  const missing = await store.addSubscription({ platform: 'douyu', roomId: '999', at: 5000 });
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /监控/, '手输未添加的房间号不支持');
+  assert.equal((await store.addSubscription({ platform: 'twitch', roomId: '100', at: 5000 })).ok, false);
+  assert.equal(storage.writes.length, 0);
+});
+
+test('addSubscription：同一房间可加多条，互不覆盖', async () => {
+  const { store } = createStore({ rooms: [room('douyu', '100')] }, { now: () => 1000 });
+  await store.addSubscription({ platform: 'douyu', roomId: '100', at: 5000 });
+  await store.addSubscription({ platform: 'douyu', roomId: '100', at: 9000 });
+  const snap = await store.snapshot();
+  assert.equal(snap.subscriptions.length, 2);
+  assert.deepEqual(snap.subscriptions.map(s => s.at), [5000, 9000]);
+});
+
+test('removeSubscription：按 id 命中即删；未命中 / 空 id 幂等不写盘', async () => {
+  const { store, storage } = createStore(
+    { rooms: [room('douyu', '100')], subscriptions: [{ id: 's1', platform: 'douyu', roomId: '100', at: 5000 }] },
+    { now: () => 1000 }
+  );
+  const writesBefore = storage.writes.length;
+
+  assert.deepEqual(await store.removeSubscription('s1'), { removed: true });
+  assert.deepEqual(storage.raw().subscriptions, []);
+  assert.deepEqual(await store.removeSubscription('s1'), { removed: false }, '重复删除幂等');
+  assert.deepEqual(await store.removeSubscription(''), { removed: false });
+  assert.equal(storage.writes.length, writesBefore + 1, '只有命中那次写了盘');
+});
+
+test('importConfig：导入不触碰 subscriptions（本机已有订阅原封不动）', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '100')],
+    streamers: [streamer('douyu', '100')],
+    categories: [],
+    settings: { refreshInterval: 60 },
+    subscriptions: [{ id: 's1', platform: 'douyu', roomId: '100', at: 5000 }]
+  });
+
+  await store.importConfig({
+    rooms: [{ platform: 'bilibili', roomId: '200', nickname: '新', notify: false }],
+    categories: [],
+    settings: { refreshInterval: 120 }
+  });
+
+  assert.deepEqual(storage.raw().subscriptions, [
+    { id: 's1', platform: 'douyu', roomId: '100', at: 5000 }
+  ], '导入只替换 rooms / categories / settings，订阅保留');
+});
+
+test('init：老安装缺 subscriptions 时不 seed（读侧回退空数组，不重写用户数据）', async () => {
+  const { store, storage } = createStore({ rooms: [room('douyu', '100')], streamers: [], settings: {}, categories: [] });
+  const result = await store.init();
+  assert.equal(result.seeded, false, '只缺新键不算全新安装');
+  assert.equal('subscriptions' in storage.raw(), false, '不写盘');
+
+  const snap = await store.snapshot();
+  assert.deepEqual(snap.subscriptions, [], '读侧回退空数组');
+});
+
+test('init：五键俱缺时写入默认值（含空订阅列表）', async () => {
+  const { store, storage } = createStore({});
+  const result = await store.init();
+  assert.equal(result.seeded, true);
+  assert.deepEqual(storage.raw().subscriptions, []);
 });
 
 // === 串行队列：读改写不交错（本 module 存在的理由）===

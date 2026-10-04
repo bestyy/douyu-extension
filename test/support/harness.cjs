@@ -14,6 +14,7 @@ const viewerAlert = require('../../lib/viewer-alert.js');
 const danmakuWatch = require('../../lib/danmaku-watch.js');
 const danmakuSurge = require('../../lib/danmaku-surge.js');
 const highlightAlert = require('../../lib/highlight-alert.js');
+const subscriptionAlert = require('../../lib/subscription-alert.js');
 
 const clone = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
@@ -153,6 +154,8 @@ function createHarness(seed = {}, options = {}) {
     storage,
     identity: RoomIdentity,
     categoryRules: RoomCategories,
+    // 订阅的「只接受未来时刻」校验与编排的到点裁决共用同一个时刻源：给了 clock 就用它（可控时钟）
+    now: clock ? () => clock.now() : undefined,
     resolveNickname: async (platform, roomId) => {
       const result = await apis[platform].resolveNickname(roomId);
       return result && result.success ? { ok: true, nickname: result.nickname } : { ok: false };
@@ -210,8 +213,9 @@ function createHarness(seed = {}, options = {}) {
       clients,
       bridge,
       notifier,
-      rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
+      rules: { ...viewerAlert, ...danmakuWatch, ...danmakuSurge, ...highlightAlert, ...subscriptionAlert, DanmakuWatchCounter: Counter, SurgeMeter: Surge },
       identity: RoomIdentity,
+      now: clock ? () => clock.now() : undefined,
       alarms: {
         create: (name, info) => {
           alarms.push({ name, info: clone(info) });
@@ -278,6 +282,11 @@ async function pollHighlights(harness) {
   await harness.orchestrator.onAlarm('highlightPoll');
 }
 
+/** 订阅到点一次（走编排的 alarm 入口，与 poll / sample / settleSurge / pollHighlights 同形） */
+async function remindSubscriptions(harness) {
+  await harness.orchestrator.onAlarm('subscriptionReminder');
+}
+
 /** SW 唤醒：重建内存态（通道状态 + 盯守配置），生产里由入口在加载时调用 */
 async function boot(harness) {
   await harness.orchestrator.start();
@@ -295,6 +304,7 @@ module.exports = {
   sample,
   settleSurge,
   pollHighlights,
+  remindSubscriptions,
   boot,
   douyuResult,
   bilibiliResult,
