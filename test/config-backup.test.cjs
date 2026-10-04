@@ -43,15 +43,16 @@ test('buildExport：带格式标识与版本号，exportedAt 取注入的时刻'
   assert.equal(out.exportedAt, '2026-09-27T10:00:00.000Z');
 });
 
-test('buildExport：剥掉快照附加的 online，房间只留持久化字段', () => {
+test('buildExport：剥掉快照附加的 online 与平台派生的 internalRoomId，房间只留持久化字段', () => {
   const snapshot = {
-    rooms: [{ platform: 'douyu', roomId: '12345', nickname: '甲', online: true, notify: true }],
+    rooms: [{ platform: 'douyu', roomId: '91224', nickname: '甲', online: true, internalRoomId: '8727436', notify: true }],
     categories: [],
     settings: {}
   };
   const out = ConfigBackup.buildExport(snapshot);
   assert.equal('online' in out.rooms[0], false);
-  assert.equal(out.rooms[0].roomId, '12345');
+  assert.equal('internalRoomId' in out.rooms[0], false, '内部号是平台派生数据，不进备份文件');
+  assert.equal(out.rooms[0].roomId, '91224');
   assert.equal(out.rooms[0].notify, true);
 });
 
@@ -114,6 +115,21 @@ test('parseBackup：房间号两端的空白被 trim 后落盘为纯数字', () 
   }));
   assert.equal(result.ok, true);
   assert.equal(result.config.rooms[0].roomId, '12345');
+});
+
+test('parseBackup：导入不保留 internalRoomId（缺它也照收），由导入后的轮询重新补齐', () => {
+  const withInternal = parse(text({
+    format: 'douyu-extensions-config', version: 1,
+    rooms: [{ platform: 'douyu', roomId: '91224', nickname: '甲', internalRoomId: '8727436' }]
+  }));
+  assert.equal(withInternal.ok, true);
+  assert.equal('internalRoomId' in withInternal.config.rooms[0], false, '文件里夹带的内部号也不落进配置');
+
+  const without = parse(text({
+    format: 'douyu-extensions-config', version: 1,
+    rooms: [{ platform: 'douyu', roomId: '91224', nickname: '甲' }]
+  }));
+  assert.equal(without.ok, true, '缺 internalRoomId 不拒绝导入');
 });
 
 // === 解析与校验：整份拒绝 ===

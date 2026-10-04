@@ -72,6 +72,7 @@ test('fetchRoomInfo：直查失败后按房间页解析内部号再查，roomId 
     assert.equal(result.success, true);
     assert.equal(result.data.nickname, '暖妹QWQ', '昵称来自内部号直查的结果');
     assert.equal(result.data.roomId, '91225', 'roomId 回显调用方传入的靓号（复合键对齐）');
+    assert.equal(result.data.internalRoomId, '8727437', '回传本次实际查询的内部号');
     assert.deepEqual(calls, [
       'https://www.douyu.com/betard/91225',
       'https://www.douyu.com/91225',
@@ -82,6 +83,7 @@ test('fetchRoomInfo：直查失败后按房间页解析内部号再查，roomId 
     const cached = await DouyuAPI.fetchRoomInfo('91225');
     assert.equal(cached.success, true);
     assert.equal(cached.data.roomId, '91225');
+    assert.equal(cached.data.internalRoomId, '8727437', '缓存命中时仍回传内部号');
     assert.deepEqual(calls, ['https://www.douyu.com/betard/8727437'], '缓存命中后直接查内部号，不再拉页面');
   } finally {
     globalThis.fetch = originalFetch;
@@ -104,6 +106,7 @@ test('fetchRoomInfo：普通房间不被缓存影响，走一次直查', async (
     assert.equal(result.success, true);
     assert.equal(result.data.online, true);
     assert.equal(result.data.roomId, '9999');
+    assert.equal(result.data.internalRoomId, '9999', '普通房间内部号与输入号相同');
     assert.deepEqual(calls, ['https://www.douyu.com/betard/9999']);
   } finally {
     globalThis.fetch = originalFetch;
@@ -131,6 +134,44 @@ test('fetchRoomInfo：页面里没有对应房间时返回失败，不写缓存�
       'https://www.douyu.com/betard/900001',
       'https://www.douyu.com/900001'
     ], '失败不缓存，下一轮仍按原号直查并重试解析');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// === fetchHighlights：调用方传入的号就是线上取数用的内部号（见 ADR-0017） ===
+
+test('fetchHighlights：不再查内存缓存，收到的号即传下去的号', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    const u = String(url);
+    calls.push({ url: u, body: options && options.body });
+    if (u.endsWith('/betard/91227')) {
+      return { ok: true, text: async () => '<!DOCTYPE html><html>提示信息</html>' };
+    }
+    if (u.endsWith('/91227')) {
+      return { ok: true, text: async () => embedded(8727439, 91227) };
+    }
+    if (u.endsWith('/betard/8727439')) {
+      return { ok: true, text: async () => JSON.stringify({ room: { room_id: 8727439, owner_name: '甲', room_name: '在播', show_status: 1 } }) };
+    }
+    return { ok: true, text: async () => JSON.stringify({ error: 0, data: { highlightList: [] } }) };
+  };
+
+  try {
+    // 先跑一次靓号解析，把 91227 → 8727439 写进内存缓存：若 fetchHighlights 仍读缓存，下面会被暴露
+    await DouyuAPI.fetchRoomInfo('91227');
+    calls.length = 0;
+
+    await DouyuAPI.fetchHighlights('91227');
+    assert.equal(calls[0].url, 'https://www.douyu.com/wgapi/vodnc/center/ailive/getHighlightDetail');
+    assert.deepEqual(JSON.parse(calls[0].body), { rid: 91227, sort: 0 },
+      '传入什么号就用什么号取，不读缓存换算（编排已负责传内部号）');
+
+    calls.length = 0;
+    await DouyuAPI.fetchHighlights('8727439');
+    assert.deepEqual(JSON.parse(calls[0].body), { rid: 8727439, sort: 0 }, '传入内部号即内部号');
   } finally {
     globalThis.fetch = originalFetch;
   }

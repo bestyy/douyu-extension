@@ -136,6 +136,22 @@ test('入口装配：加载即注册六类监听、构建依赖并启动重建�
   assert.equal(stub.listeners.notifButton.length, 1);
 });
 
+test('入口装配：两个斗鱼客户端都接入内部号解析端口（读房间库快照，缺则回退输入号）', async () => {
+  const stub = createChromeStub();
+  stub.data.rooms = [{ roomId: '91224', platform: 'douyu', nickname: '甲', internalRoomId: '8727436' }];
+  const sandbox = loadEntry(stub.chrome);
+  await tick();
+
+  const samplePort = vm.runInContext('clients.douyuSample.resolveInternalRoomId', sandbox);
+  const watchPort = vm.runInContext('clients.douyuWatch.resolveInternalRoomId', sandbox);
+  assert.equal(typeof samplePort, 'function', '采样客户端接入了解析端口');
+  assert.equal(typeof watchPort, 'function', '检测客户端接入了解析端口');
+  assert.equal(samplePort, watchPort, '两个实例共用同一实现');
+
+  assert.equal(await samplePort('91224'), '8727436', '靓号房间解析出条目里的内部号');
+  assert.equal(await samplePort('9999'), '9999', '条目缺内部号时回退输入号');
+});
+
 test('onInstalled：房间库写入默认值、置首启标记、建两个 alarm', async () => {
   const stub = createChromeStub();
   loadEntry(stub.chrome);

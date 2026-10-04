@@ -98,10 +98,20 @@ const notifier = {
 // 斗鱼客户端另需一个开播状态 port：采样超时兜底要问一次「该房是否开播」，这个平台事实的
 // 唯一实现在 douyu-api（见 CONTEXT.md「开播状态」），此处只做形状收敛（{success, data} → 三态布尔），
 // 与 resolveNickname 的收敛位置一致。两个实例共用同一个 port（盯守走长连接、不会走到超时兜底）。
+// 两个实例另共用内部号解析 port（斗鱼线上取数一律用内部号，见 ADR-0017）。
 const probeDouyuOnline = async roomId => {
   const result = await DouyuAPI.fetchRoomInfo(roomId);
   return result && result.success ? result.data.online : undefined;
 };
+
+// 斗鱼线上取数一律用内部房间号（弹幕只认内部号，见 ADR-0017）：解析端口读房间库只读快照里该房的
+// internalRoomId，缺则回退输入号（纯本地查找、无网络，冷启动的 SW 也有效）。采样与检测两个客户端共用。
+const resolveDouyuInternalRoomId = async roomId => {
+  const snapshot = await roomStore.snapshot();
+  const room = snapshot.rooms.find(r => r.platform === 'douyu' && RoomIdentity.sameRoomId(r.roomId, roomId));
+  return (room && room.internalRoomId) || roomId;
+};
+
 const clients = {};
 const orchestrator = createOrchestrator({
   store: roomStore,
@@ -135,6 +145,7 @@ const orchestrator = createOrchestrator({
 
 clients.douyuSample = new BarrageClient({
   probeOnline: probeDouyuOnline,
+  resolveInternalRoomId: resolveDouyuInternalRoomId,
   onVipCount: data => orchestrator.onViewerCount('douyu', { roomId: data.roomId, value: data.vipCount })
 });
 clients.bilibiliSample = new BilibiliBarrageClient({
@@ -143,6 +154,7 @@ clients.bilibiliSample = new BilibiliBarrageClient({
 });
 clients.douyuWatch = new BarrageClient({
   probeOnline: probeDouyuOnline,
+  resolveInternalRoomId: resolveDouyuInternalRoomId,
   onDanmu: data => orchestrator.handleDanmu('douyu', data)
 });
 clients.bilibiliWatch = new BilibiliBarrageClient({

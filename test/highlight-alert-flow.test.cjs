@@ -287,3 +287,20 @@ test('偏离合同的通知 ID（带后缀）不会误伤既有四种通知的�
     'https://www.douyu.com/100'
   ]);
 });
+
+test('取数传房间条目的内部号；缺省时回退房间号（普通房间传的就是房间号）', async () => {
+  const harness = createHarness({
+    rooms: [
+      room('91224', 'douyu', { highlightAlert: true, internalRoomId: '8727436' }),
+      room('100', 'douyu', { highlightAlert: true })
+    ],
+    streamers: [streamer('91224', 'douyu'), streamer('100', 'douyu')]
+  }, { highlightResults: { douyu: highlights(item(60411, '新看点')) } });
+
+  await pollHighlights(harness);
+
+  assert.deepEqual(harness.highlightCalls, [
+    { platform: 'douyu', roomId: '8727436' },
+    { platform: 'douyu', roomId: '100' }
+  ], '有内部号的靓号房间传内部号，尚未补齐的普通房间回退房间号');
+});

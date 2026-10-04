@@ -8,6 +8,8 @@
 // 两组：
 // - 协议解析：encodeFrame / decodeFrame / parseDyMessage（纯函数）
 // - 采样兜底：decideSampleTimeout 的裁决表 + _handleTimeout 的接线（假 port、可控定时器、假 WebSocket）
+// - 内部号解析（见 ADR-0017）：连接前用 resolveInternalRoomId 端口把存储号换成线上内部号，
+//   登录/订阅帧用内部号、回调回报存储号；端口缺失/抛错/空值回退；解析先于 socket 打开、超时计时在后
 
 'use strict';
 
@@ -49,9 +51,16 @@ function createManualTimers() {
   };
 }
 
+/** 排空微任务：连接前的内部号解析是异步的，socket 在解析之后才打开（不触真实定时器） */
+async function flush() {
+  for (let i = 0; i < 8; i++) {
+    await Promise.resolve();
+  }
+}
+
 /**
  * 安装假 WebSocket：node 有原生实现，不覆盖会真连网。
- * 只满足构造与 _disconnect 需要的面（send / close 为空操作）。
+ * 记录构造实例、记录 send 出去的帧（供断言用的是哪个号），并可手动触发 onopen。
  */
 function installFakeWebSocket(t) {
   const original = globalThis.WebSocket;
@@ -60,10 +69,13 @@ function installFakeWebSocket(t) {
     constructor(url) {
       this.url = url;
       this.readyState = 0;
+      this.sent = [];
       instances.push(this);
     }
-    send() { }
+    send(frame) { this.sent.push(frame); }
     close() { this.readyState = 3; }
+    /** 手动触发 onopen（登录/订阅帧在此才发出） */
+    open() { this.readyState = 1; if (this.onopen) this.onopen(); }
   }
   FakeWebSocket.OPEN = 1;
   globalThis.WebSocket = FakeWebSocket;
@@ -195,6 +207,7 @@ test('采样：不注入 timers 时（生产路径）用全局定时器，且不
   const client = new BarrageClient({ probeOnline: async () => true });
 
   assert.doesNotThrow(() => client.sample(['100', '200']), '不得因接收者不是全局而抛 Illegal invocation');
+  await flush(); // 内部号解析在连接前异步完成，socket 在解析之后才打开
   assert.equal(sockets.length, 2, '两个房间各建了一条采样连接');
   assert.equal(client.connections.size, 2);
   assert.equal(seen.set, 2, '每条连接都用自己的全局定时器排了采样超时');
@@ -208,6 +221,7 @@ test('采样：不注入 timers 时（生产路径）用全局定时器，且不
 test('采样超时：未开播 → 按贵宾数 0 上报并收尾，不重连', async t => {
   const h = makeSamplingClient(t, async () => false);
   h.client.sample(['100']);
+  await flush();
 
   assert.equal(h.timers.pending.size, 1, 'sample 排了一次采样超时');
   assert.equal([...h.timers.pending.values()][0].ms, 20000, '超时时长与 SAMPLE_TIMEOUT_MS 一致');
@@ -223,8 +237,10 @@ test('采样超时：未开播 → 按贵宾数 0 上报并收尾，不重连', 
 test('采样超时：在播但没收到 oni → 立刻重连重试一次（重试连接有自己的超时）', async t => {
   const h = makeSamplingClient(t, async () => true);
   h.client.sample(['100']);
+  await flush();
 
   await h.timers.fire();
+  await flush(); // 重试连接同样是解析后才打开
 
   assert.deepEqual(h.counts, [], '未上报任何贵宾数');
   assert.equal(h.sockets.length, 2, '重连了一次');
@@ -235,9 +251,12 @@ test('采样超时：在播但没收到 oni → 立刻重连重试一次（重�
 test('采样超时：重试后仍超时 → 本轮跳过，不再重连也不再上报', async t => {
   const h = makeSamplingClient(t, async () => true);
   h.client.sample(['100']);
+  await flush();
 
   await h.timers.fire(); // 第一次：retry
+  await flush();
   await h.timers.fire(); // 第二次：skip
+  await flush();
 
   assert.deepEqual(h.counts, []);
   assert.equal(h.sockets.length, 2, '只重连一次，不无限重试');
@@ -249,6 +268,7 @@ test('采样超时：查不到开播状态 → 本轮放弃（不报 0、不重�
   for (const probe of [async () => undefined, async () => { throw new Error('boom'); }]) {
     const h = makeSamplingClient(t, probe);
     h.client.sample(['100']);
+    await flush();
 
     await h.timers.fire();
 
@@ -273,6 +293,7 @@ test('采样超时：探测期间 oni 已到达并上报 → 不被陈旧的探�
   });
 
   client.sample(['100']);
+  await flush();
   state = client.connections.get('100');
   probeOnline = async () => {
     state.reported = true;
@@ -289,6 +310,7 @@ test('采样超时：探测期间 oni 已到达并上报 → 不被陈旧的探�
 test('采样超时：同一个超时回调被触发两次 → 第二次不再白问一次开播状态', async t => {
   const h = makeSamplingClient(t, async () => false);
   h.client.sample(['100']);
+  await flush();
   const [{ fn }] = [...h.timers.pending.values()];
 
   await fn(); // 第一次：report-zero，state.reported 置真
@@ -296,4 +318,136 @@ test('采样超时：同一个超时回调被触发两次 → 第二次不再白
 
   assert.deepEqual(h.counts, [{ roomId: '100', vipCount: 0 }], '只上报一次');
   assert.deepEqual(h.probeCalls, ['100'], '只探测一次');
+});
+
+// === 内部号解析（见 ADR-0017） ===
+// 只断言外部可观察的行为：串口上真正发出的帧用的是哪个号、回调回报的是哪个号，
+// 以及解析与「打开 socket / 起超时计时」的先后。
+
+test('采样模式：登录帧与订阅帧用内部号，贵宾数回调回报存储号', async t => {
+  const timers = createManualTimers();
+  const counts = [];
+  const sockets = installFakeWebSocket(t);
+  const client = new BarrageClient({
+    probeOnline: async () => true,
+    resolveInternalRoomId: async roomId => (roomId === '91224' ? '8727436' : roomId),
+    onVipCount: data => counts.push(data),
+    timers
+  });
+
+  client.sample(['91224']);
+  await flush();
+  assert.equal(sockets.length, 1);
+  sockets[0].open();
+  const frames = sockets[0].sent.map(decodeFrame);
+  assert.equal(frames.length, 2, '登录帧 + 订阅帧');
+  assert.match(frames[0], /^type@=loginreq\/roomid@=8727436\/dfl@=\//, '登录帧 roomid@= 用内部号');
+  assert.equal(frames[1], 'type@=joingroup/rid@=8727436/gid@=1/', '订阅帧 rid@= 用内部号');
+  assert.ok(!frames[0].includes('91224'), '登录帧不带存储号');
+
+  // oni 自带的 rid 是内部号：以它当存储键会挂空，回调必须回报存储号
+  sockets[0].onmessage({ data: encodeFrame('type@=oni/vn@=277/rid@=8727436/') });
+  assert.deepEqual(counts, [{ roomId: '91224', vipCount: 277 }], '贵宾数回调回报存储号');
+});
+
+test('检测长连接模式：登录帧与订阅帧用内部号，弹幕回调回报存储号', async t => {
+  const sockets = installFakeWebSocket(t);
+  const danmus = [];
+  const client = new BarrageClient({
+    probeOnline: async () => true,
+    resolveInternalRoomId: async () => '8727436',
+    onDanmu: data => danmus.push(data)
+  });
+
+  client.setRooms(['91224']);
+  await flush();
+  assert.equal(sockets.length, 1);
+  sockets[0].open();
+  const frames = sockets[0].sent.map(decodeFrame);
+  assert.match(frames[0], /^type@=loginreq\/roomid@=8727436\/dfl@=\//, '登录帧用内部号');
+  assert.equal(frames[1], 'type@=joingroup/rid@=8727436/gid@=1/', '订阅帧用内部号');
+
+  sockets[0].onmessage({ data: encodeFrame('type@=chatmsg/nn@=用户1/txt@=你好/') });
+  assert.deepEqual(danmus, [{ roomId: '91224', text: '你好', user: '用户1' }], '弹幕回调回报存储号');
+
+  client.destroy();
+});
+
+test('内部号端口未注入 / 抛错 / 返回空值 → 回退输入号连', async t => {
+  const cases = [
+    ['未注入', {}],
+    ['抛错', { resolveInternalRoomId: async () => { throw new Error('boom'); } }],
+    ['返回空值', { resolveInternalRoomId: async () => '' }]
+  ];
+  for (const [name, options] of cases) {
+    const timers = createManualTimers();
+    const sockets = installFakeWebSocket(t);
+    const client = new BarrageClient({
+      probeOnline: async () => true,
+      onVipCount: () => {},
+      timers,
+      ...options
+    });
+
+    client.sample(['91224']);
+    await flush();
+    sockets[0].open();
+    const frames = sockets[0].sent.map(decodeFrame);
+    assert.match(frames[0], /roomid@=91224/, `${name}：登录帧回退输入号`);
+    assert.equal(frames[1], 'type@=joingroup/rid@=91224/gid@=1/', `${name}：订阅帧回退输入号`);
+  }
+});
+
+test('同一实例内采样与检测两种模式共用同一条内部号解析', async t => {
+  const timers = createManualTimers();
+  const sockets = installFakeWebSocket(t);
+  const resolved = [];
+  const client = new BarrageClient({
+    probeOnline: async () => true,
+    resolveInternalRoomId: async roomId => {
+      resolved.push(roomId);
+      return `internal-${roomId}`;
+    },
+    onVipCount: () => {},
+    onDanmu: () => {},
+    timers
+  });
+
+  client.sample(['100']);   // 采样模式：房间 100
+  await flush();
+  client.setRooms(['200']); // 检测模式：房间 200（两个连接各自解析）
+  await flush();
+
+  assert.deepEqual(resolved, ['100', '200'], '两种模式都经同一端口解析，入参是存储号');
+
+  const framesOf = ws => ws.sent.map(decodeFrame);
+  sockets[0].open();
+  sockets[1].open();
+  assert.equal(framesOf(sockets[0])[1], 'type@=joingroup/rid@=internal-100/gid@=1/');
+  assert.equal(framesOf(sockets[1])[1], 'type@=joingroup/rid@=internal-200/gid@=1/');
+
+  client.destroy();
+});
+
+test('解析在打开 socket 之前完成，超时计时在 socket 打开之后才开始', async t => {
+  const timers = createManualTimers();
+  const sockets = installFakeWebSocket(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const client = new BarrageClient({
+    probeOnline: async () => true,
+    resolveInternalRoomId: async () => { await gate; return '8727436'; },
+    onVipCount: () => {},
+    timers
+  });
+
+  client.sample(['91224']);
+  await flush();
+  assert.equal(sockets.length, 0, '解析未完成时不打开 socket');
+  assert.equal(timers.pending.size, 0, '解析期间不占用超时预算');
+
+  release();
+  await flush();
+  assert.equal(sockets.length, 1, '解析完成后才打开 socket');
+  assert.equal(timers.pending.size, 1, 'socket 打开之后才排超时');
 });

@@ -246,6 +246,80 @@ test('mergePollResults：没有房间时不写盘', async () => {
   assert.equal(storage.writes.length, 0);
 });
 
+// === 轮询合并：内部号写回房间条目（见 ADR-0017） ===
+
+test('mergePollResults：把平台返回的内部号写回房间条目（靓号路径），不加进主播快照', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '91224')],
+    streamers: [streamer('douyu', '91224', { online: true })]
+  });
+  await store.mergePollResults({
+    results: { douyu: { success: true, data: [{ roomId: '91224', online: true, internalRoomId: '8727436' }] } }
+  });
+  assert.equal(storage.raw().rooms[0].internalRoomId, '8727436', '内部号写回房间条目');
+  assert.equal(storage.raw().rooms[0].roomId, '91224', '房间身份仍是用户输入的靓号（不替换）');
+  assert.ok(!('internalRoomId' in storage.raw().streamers[0]), '主播快照不带内部号（它是房间条目的派生字段）');
+});
+
+test('mergePollResults：普通平台 / 缺该字段时不写内部号，已有值不被误伤', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '91224', { internalRoomId: '8727436' }), room('bilibili', '200')],
+    streamers: [streamer('douyu', '91224', { online: true }), streamer('bilibili', '200', { online: true })]
+  });
+  await store.mergePollResults({
+    results: {
+      douyu: { success: true, data: [{ roomId: '91224', online: true }] }, // 缺 internalRoomId
+      bilibili: { success: true, data: [{ roomId: '200', online: true }] }
+    }
+  });
+  const byRoom = key => storage.raw().rooms.find(r => `${r.platform}_${r.roomId}` === key);
+  assert.equal(byRoom('douyu_91224').internalRoomId, '8727436', '缺字段时不抹掉已有值');
+  assert.ok(!('internalRoomId' in byRoom('bilibili_200')), 'B站不写该字段');
+  assert.deepEqual(storage.writes, [['streamers']], '没有内部号可写时不额外写 rooms');
+});
+
+test('mergePollResults：补齐内部号不改分类归属、排序与 per-room 开关', async () => {
+  const { store, storage } = createStore({
+    rooms: [
+      room('douyu', '91224', { categoryId: 'c1', notify: true, watch: { enabled: true, keywords: ['上车'] }, viewerAlert: { enabled: true, threshold: 1000 }, surgeAlert: true, highlightAlert: true }),
+      room('douyu', '91225', { notify: false })
+    ],
+    categories: [{ id: 'c1', name: '游戏' }],
+    streamers: [streamer('douyu', '91224', { online: true }), streamer('douyu', '91225', { online: false })]
+  });
+  await store.mergePollResults({
+    results: {
+      douyu: { success: true, data: [
+        { roomId: '91225', online: false, internalRoomId: '8727437' }, // 顺序故意倒过来
+        { roomId: '91224', online: true, internalRoomId: '8727436' }
+      ] }
+    }
+  });
+  const rooms = storage.raw().rooms;
+  assert.deepEqual(rooms.map(r => r.roomId), ['91224', '91225'], '房间顺序不变');
+  assert.equal(rooms[0].internalRoomId, '8727436');
+  assert.equal(rooms[0].categoryId, 'c1', '分类归属不变');
+  assert.equal(rooms[0].notify, true);
+  assert.deepEqual(rooms[0].watch, { enabled: true, keywords: ['上车'] }, '检测配置不变');
+  assert.deepEqual(rooms[0].viewerAlert, { enabled: true, threshold: 1000 }, '观众数提醒配置不变');
+  assert.equal(rooms[0].surgeAlert, true, '激增开关不变');
+  assert.equal(rooms[0].highlightAlert, true, '看点开关不变');
+  assert.equal(rooms[1].internalRoomId, '8727437');
+  assert.equal(rooms[1].notify, false);
+});
+
+test('mergePollResults：老数据缺 internalRoomId 时容忍（不报错、不写该字段）', async () => {
+  const { store, storage } = createStore({
+    rooms: [room('douyu', '100')], // 老房间：条目里还没有 internalRoomId
+    streamers: [streamer('douyu', '100', { online: true })]
+  });
+  const result = await store.mergePollResults({
+    results: { douyu: { success: true, data: [{ roomId: '100', online: true }] } }
+  });
+  assert.equal(result.changed, true);
+  assert.ok(!('internalRoomId' in storage.raw().rooms[0]), '解析不到就保持缺省');
+});
+
 // === 值到达 ===
 
 test('recordViewerCount：写入并回传前后值、房间快照与设置（提醒判定零额外读盘）', async () => {
